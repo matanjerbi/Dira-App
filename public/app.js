@@ -701,6 +701,7 @@
     return `<div class="card">${d.info.length ? d.info.map((i) => `<div class="info-row">
         <div class="grow" data-a="info-edit" data-id="${i.id}" style="cursor:pointer"><div class="lbl">${esc(i.label)}</div><div class="val">${i.value ? (phoneLike(i.value) ? `<a href="tel:${esc(i.value.replace(/[^\d+]/g, ''))}">${esc(i.value)}</a>` : esc(i.value)) : '<span class="muted small">לחצו להוספה</span>'}</div></div>
         ${i.value ? `<button class="icon-btn" data-a="copy" data-v="${esc(i.value)}" aria-label="העתקה">⧉</button>` : ''}
+        <button class="icon-btn" data-a="info-del-quick" data-id="${i.id}" aria-label="מחיקה">🗑️</button>
       </div>`).join('') : '<div class="empty">אין פרטים</div>'}</div>
       <button class="btn primary block" data-a="info-new">+ פרט חדש</button>`;
   }
@@ -956,6 +957,11 @@
       if (!body.label) return toast('צריך כותרת');
       closeSheet();
       await act(ds.id ? 'PATCH' : 'POST', ds.id ? 'info/' + ds.id : 'info', body, 'נשמר');
+    },
+    'info-del-quick': async (ds) => {
+      const it = D().info.find((x) => x.id === ds.id);
+      if (it && it.value && !confirm(`למחוק את "${it.label}"?`)) return;
+      await act('DELETE', 'info/' + ds.id, null, 'נמחק');
     },
     'info-del': async (ds) => { closeSheet(); await act('DELETE', 'info/' + ds.id, null, 'נמחק'); },
 
