@@ -360,6 +360,7 @@ const routes = [
     const members = await activeMembers(db, A);
     const d = await ensureDuty(db, A, members);
     if (!d) throw new HttpError('אין שותפים');
+    if (d.member_id !== me.id) throw new HttpError('רק התורן/ית יכול/ה לסמן שהתורנות בוצעה', 403);
     const imageId = await saveImage(db, A, body.image);
     const ts = now();
     const t = todayNum();

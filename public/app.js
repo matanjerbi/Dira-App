@@ -395,18 +395,18 @@
         <span class="grow">${esc(M(l.member_id).name)} סיים/ה את התורנות ${rel(l.done_at)}${l.done_by !== l.member_id ? ` (סומן ע״י ${esc(M(l.done_by).name)})` : ''}</span>
         ${l.image_id ? `<button class="icon-btn" data-a="view-img" data-id="${l.image_id}">🖼</button>` : ''}
         ${d.can_undo ? '<button class="btn ghost sm" data-a="duty-undo">ביטול</button>' : ''}</div>` : '';
-    const showDone = d.status !== 'upcoming' || mine;
+    const showDone = mine;
     return `<div class="${cls}">
       ${last}
       <div class="small muted">${d.status === 'upcoming' ? 'התורן/ית הבא/ה' : 'התורן/ית עכשיו'}</div>
       <div class="row" style="margin:8px 0">${av(d.member_id, 'lg')}<div class="grow"><div style="font-size:20px;font-weight:700">${esc(nm(d.member_id))}</div><div class="small muted">${dutyRange(d)}</div></div></div>
       <div class="row wrap" style="gap:6px">${status}${pending ? `<span class="tag warn">⇄ ממתין לאישור של ${esc(M(pending.to_member).name)}</span>` : ''}</div>
       ${showDone ? `<div class="row" style="margin-top:12px;gap:6px">
-        <button class="btn primary grow" data-a="duty-done">✓ ${mine ? 'סיימתי את התורנות' : 'התורנות בוצעה'}</button>
+        <button class="btn primary grow" data-a="duty-done">✓ סיימתי את התורנות</button>
         <button class="btn" data-a="duty-done-photo" aria-label="בוצע עם תמונה">📷</button>
         ${mine && !pending && D().members.length > 1 ? '<button class="btn" data-a="swap-ask" aria-label="החלפה">⇄</button>' : ''}
         ${pending && pending.from_member === me().id ? `<button class="btn" data-a="swap-reject" data-id="${pending.id}">ביטול בקשה</button>` : ''}
-      </div>` : ''}
+      </div>` : d.status !== 'upcoming' ? `<p class="small muted" style="margin:10px 0 0">רק ${esc(M(d.member_id).name)} יכול/ה לסמן שהתורנות בוצעה</p>` : ''}
       ${full && D().tasks.length ? `<hr class="sep"><div class="small muted" style="margin-bottom:6px">התורנות כוללת</div>
         <div class="chips">${D().tasks.map((t) => `<span class="tag" style="font-size:13px;padding:4px 10px">${esc(t.icon || '')} ${esc(t.name)}</span>`).join('')}</div>` : ''}
     </div>`;
@@ -772,8 +772,6 @@
 
     // chores
     'duty-done': async () => {
-      const d = D().duty;
-      if (d.member_id !== me().id && !confirm(`לסמן שהתורנות של ${M(d.member_id).name} בוצעה?`)) return;
       await act('POST', 'duty/done', {}, 'כל הכבוד! ✨ התור עבר הלאה');
     },
     'duty-done-photo': async () => {
