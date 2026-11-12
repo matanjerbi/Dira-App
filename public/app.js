@@ -537,6 +537,7 @@
         <div class="small muted" style="margin-top:3px">${s.bought_at ? `נקנה ע״י ${esc(M(s.bought_by).name)} · ${rel(s.bought_at)}` : `${esc(M(s.added_by).name)} הוסיף/ה · ${rel(s.added_at)}`}</div>
       </div>
       ${av(s.bought_at ? s.bought_by : s.added_by, 'sm')}
+      <button class="icon-btn" style="margin-top:-4px" data-a="shop-del-quick" data-id="${s.id}" aria-label="מחיקה">🗑️</button>
     </div>`;
   }
   function shopSheet(s) {
@@ -826,6 +827,11 @@
       const body = { name: val('e-name'), qty: val('e-qty'), note: val('e-note'), kind: sheetCtx.kind, urgent: sheetCtx.urgent };
       closeSheet();
       await act('PATCH', 'shopping/' + ds.id, body, 'נשמר');
+    },
+    'shop-del-quick': async (ds) => {
+      const it = D().shopping.find((s) => s.id === ds.id);
+      if (!it) return;
+      await act('DELETE', 'shopping/' + ds.id, null, `נמחק: ${it.name}`);
     },
     'shop-del': async (ds) => { closeSheet(); await act('DELETE', 'shopping/' + ds.id, null, 'נמחק'); },
     'store-toggle': (ds) => act('POST', 'store', { on: ds.on === '1' }, ds.on === '1' ? 'כולם רואים שאת/ה בסופר' : 'סיימת קניות'),

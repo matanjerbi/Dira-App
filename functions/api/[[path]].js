@@ -483,8 +483,12 @@ const routes = [
     if (stmts.length) await db.batch(stmts);
     return json({ ok: true });
   }],
-  ['DELETE', 'shopping/:id', async ({ db, A, params }) => {
-    await db.prepare('DELETE FROM shopping WHERE id=? AND apartment_id=?').bind(params.id, A).run();
+  ['DELETE', 'shopping/:id', async ({ db, A, me, params }) => {
+    const it = await own(db, 'shopping', params.id, A);
+    const stmts = [db.prepare('DELETE FROM shopping WHERE id=?').bind(it.id)];
+    // deleting an item that came from the inventory means it's not needed → mark it back in stock
+    if (it.inventory_id && !it.bought_at) stmts.push(db.prepare(`UPDATE inventory SET status='ok', updated_by=?, updated_at=? WHERE id=?`).bind(me.id, now(), it.inventory_id));
+    await db.batch(stmts);
     return json({ ok: true });
   }],
   ['POST', 'shopping/clear', async ({ db, A }) => {
