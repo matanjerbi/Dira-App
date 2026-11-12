@@ -66,6 +66,46 @@
   }
   const phoneLike = (v) => /^[+\d][\d\s\-()]{6,}$/.test(v || '');
 
+  // ---------- install (PWA) ----------
+  let installEvt = null;
+  const isStandalone = () => window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+  const isIOS = () => /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const installDismissed = () => localStorage.getItem('dira.installDismissed') === '1';
+  window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installEvt = e; if (S.data || !S.token) render(); });
+  window.addEventListener('appinstalled', () => { installEvt = null; toast('Dira הותקנה 🎉'); render(); });
+  function installBanner(force) {
+    if (isStandalone() || (!force && installDismissed())) return '';
+    return `<div class="card row" style="background:var(--accent-soft)">
+      <span style="font-size:28px">📲</span>
+      <div class="grow"><b>שמירה כאפליקציה</b><div class="small muted">אייקון במסך הבית, פתיחה במסך מלא</div></div>
+      <button class="btn primary sm" data-a="install">התקנה</button>
+      ${force ? '' : '<button class="icon-btn" data-a="install-dismiss" aria-label="סגירה">✕</button>'}
+    </div>`;
+  }
+  async function doInstall() {
+    if (installEvt) {
+      installEvt.prompt();
+      const r = await installEvt.userChoice.catch(() => null);
+      installEvt = null;
+      if (r && r.outcome === 'accepted') return;
+      render();
+      return;
+    }
+    if (isIOS()) {
+      openSheet(`<h2>📲 הוספה למסך הבית</h2>
+        <div class="card row"><span style="font-size:26px">1️⃣</span><div>לחצו על כפתור <b>השיתוף</b> <span style="font-size:20px">⬆️</span> (בספארי הוא בתחתית המסך, ובכרום למעלה ליד הכתובת)</div></div>
+        <div class="card row"><span style="font-size:26px">2️⃣</span><div>גללו למטה ובחרו <b>"הוספה למסך הבית"</b> ➕</div></div>
+        <div class="card row"><span style="font-size:26px">3️⃣</span><div>לחצו <b>"הוסף"</b>, ו־Dira תופיע כאפליקציה עם אייקון</div></div>
+        <button class="btn primary block" data-a="sheet-close">הבנתי</button>`);
+      return;
+    }
+    openSheet(`<h2>📲 התקנה כאפליקציה</h2>
+      <div class="card row"><span style="font-size:26px">1️⃣</span><div>פתחו את תפריט הדפדפן <b>⋮</b> (למעלה בצד)</div></div>
+      <div class="card row"><span style="font-size:26px">2️⃣</span><div>בחרו <b>"התקנת אפליקציה"</b> או <b>"הוספה למסך הבית"</b></div></div>
+      <p class="small muted">אם האפשרות לא מופיעה, פתחו את האתר בכרום.</p>
+      <button class="btn primary block" data-a="sheet-close">הבנתי</button>`);
+  }
+
   // ---------- api ----------
   async function api(method, path, body) {
     const r = await fetch('/api/' + path, {
@@ -226,7 +266,7 @@
           <div class="field"><label>השם שלך</label><input class="input" id="o-name" placeholder="איך השותפים קוראים לך" value="${esc(o.memberName)}" maxlength="30"></div>
           <button class="btn primary block" data-a="onb-go">${o.mode === 'create' ? 'יצירת הדירה' : 'הצטרפות'}</button>
         </div>
-        <p class="muted small" style="text-align:center">באייפון: אחרי הכניסה לחצו על "שיתוף" ואז "הוספה למסך הבית", וזה יעבוד כמו אפליקציה.</p>
+        ${isStandalone() ? '' : `<button class="btn block" style="margin-top:4px" data-a="install">📲 שמירה כאפליקציה במכשיר</button>`}
       </div>`;
   }
 
@@ -265,6 +305,7 @@
     const activePolls = d.polls.filter((p) => !p.closed && !p.votes.some((v) => v.member_id === me().id));
     const notes = d.notices.filter((n) => n.kind === 'note');
     return `
+      ${installBanner(false)}
       ${storeBanners()}
       ${swapCards()}
       <div class="section-title">המטלות שלי <button class="link" data-a="tab" data-tab="chores">לכל התורנות</button></div>
@@ -630,10 +671,7 @@
         <p class="small muted">זה הקישור האישי שלך. פתיחה שלו בדפדפן אחר מחברת אותך בתור ${esc(me().name)}. אל תשלחו אותו לאחרים.</p>
         <button class="btn block" data-a="copy" data-v="${esc(loginLink)}">העתקת קישור כניסה אישי</button>
       </div>
-      <div class="card">
-        <b>התקנה כאפליקציה</b>
-        <p class="small muted" style="margin-bottom:0">אייפון (Safari): כפתור שיתוף ואז "הוספה למסך הבית".<br>אנדרואיד (Chrome): תפריט ⋮ ואז "התקנת אפליקציה".</p>
-      </div>
+      ${isStandalone() ? '<div class="card small muted">✓ Dira מותקנת כאפליקציה במכשיר הזה</div>' : installBanner(true)}
       <button class="btn block" data-a="logout">התנתקות מהמכשיר הזה</button>
       <button class="btn danger block" style="margin-top:8px" data-a="leave">עזיבת הדירה</button>
       <p class="small muted" style="text-align:center;margin-top:16px">Dira · ${esc(d.apartment.name)}</p>`;
@@ -647,6 +685,9 @@
     'sheet-bg': (ds, el, ev) => { if (ev.target === el) closeSheet(); },
     copy: async (ds) => { try { await navigator.clipboard.writeText(ds.v); toast('הועתק'); } catch { prompt('העתקה:', ds.v); } },
     'view-img': (ds) => viewImage(ds.id),
+    install: () => doInstall(),
+    'install-dismiss': () => { localStorage.setItem('dira.installDismissed', '1'); render(); toast('אפשר להתקין גם מ"עוד" ואז "הגדרות"'); },
+    'sheet-close': () => closeSheet(),
 
     // onboarding
     'onb-mode': (ds) => { saveOnb(); S.onb.mode = ds.mode; renderOnboarding(); },
