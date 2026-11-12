@@ -831,7 +831,7 @@
     'store-toggle': (ds) => act('POST', 'store', { on: ds.on === '1' }, ds.on === '1' ? 'כולם רואים שאת/ה בסופר' : 'סיימת קניות'),
 
     // inventory
-    'inv-set': (ds) => act('PATCH', 'inventory/' + ds.id, { status: ds.v }, ds.v === 'ok' ? null : 'נוסף לרשימת הקניות'),
+    'inv-set': (ds) => act('PATCH', 'inventory/' + ds.id, { status: ds.v }, ds.v === 'ok' ? 'עודכן' : 'נוסף לרשימת הקניות'),
     'inv-edit': () => { S.invEdit = !S.invEdit; render(); },
     'inv-del': async (ds) => { if (confirm('להסיר מהמלאי?')) await act('DELETE', 'inventory/' + ds.id); },
     'inv-new': () => {

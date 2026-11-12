@@ -514,8 +514,11 @@ const routes = [
     const inv = await own(db, 'inventory', params.id, A);
     const status = ['ok', 'low', 'out'].includes(body.status) ? body.status : inv.status;
     const stmts = [db.prepare('UPDATE inventory SET status=?, updated_by=?, updated_at=? WHERE id=?').bind(status, me.id, now(), inv.id)];
-    if (status !== 'ok') {
-      const open = await db.prepare('SELECT id FROM shopping WHERE inventory_id=? AND bought_at IS NULL AND cleared=0').bind(inv.id).first();
+    if (status === 'ok') {
+      // back in stock → drop the auto-added item that hasn't been bought yet
+      stmts.push(db.prepare('DELETE FROM shopping WHERE inventory_id=? AND bought_at IS NULL AND cleared=0').bind(inv.id));
+    } else {
+      const open =await db.prepare('SELECT id FROM shopping WHERE inventory_id=? AND bought_at IS NULL AND cleared=0').bind(inv.id).first();
       if (open) {
         stmts.push(db.prepare('UPDATE shopping SET urgent=? WHERE id=?').bind(status === 'out' ? 1 : 0, open.id));
       } else {
