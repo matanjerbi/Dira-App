@@ -1,0 +1,8 @@
+name = "dira"
+compatibility_date = "2026-11-01"
+pages_build_output_dir = "public"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "dira-db"
+database_id = "ae65c729-f42d-4214-8fab-db4e9ae35e03"
