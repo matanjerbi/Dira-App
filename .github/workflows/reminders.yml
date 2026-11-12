@@ -1,0 +1,12 @@
+name: Daily reminders
+
+on:
+  schedule:
+    - cron: '0 16 * * *'   # ~18:00 Israel (winter) / 19:00 (summer)
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - run: curl -fsS https://dira-6xk.pages.dev/api/cron

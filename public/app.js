@@ -106,6 +106,57 @@
       <button class="btn primary block" data-a="sheet-close">הבנתי</button>`);
   }
 
+  // ---------- push notifications ----------
+  function syncTokenToSW() {
+    if (!('caches' in window)) return;
+    caches.open('dira-auth').then((c) => (S.token ? c.put('/__token', new Response(S.token)) : c.delete('/__token'))).catch(() => {});
+  }
+  function urlB64ToUint8(b64) {
+    const pad = '='.repeat((4 - (b64.length % 4)) % 4);
+    const raw = atob((b64 + pad).replace(/-/g, '+').replace(/_/g, '/'));
+    return Uint8Array.from(raw, (c) => c.charCodeAt(0));
+  }
+  async function checkPush() {
+    if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) { S.push = 'unsupported'; return; }
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.getSubscription();
+      S.push = sub && Notification.permission === 'granted' ? 'on' : 'off';
+      if (sub && S.token) api('POST', 'push/subscribe', { subscription: sub.toJSON() }).catch(() => {});
+    } catch { S.push = 'off'; }
+  }
+  async function enablePush() {
+    if (!('Notification' in window) || !('PushManager' in window)) {
+      if (isIOS() && !isStandalone()) return doInstall();
+      return toast('הדפדפן הזה לא תומך בהתראות');
+    }
+    const perm = await Notification.requestPermission();
+    if (perm !== 'granted') return toast('ההתראות חסומות. אפשר לאשר אותן בהגדרות הדפדפן');
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      const { key } = await api('GET', 'push/key');
+      let sub = await reg.pushManager.getSubscription();
+      if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlB64ToUint8(key) });
+      await api('POST', 'push/subscribe', { subscription: sub.toJSON() });
+      syncTokenToSW();
+      S.push = 'on';
+      render();
+      await api('POST', 'push/test');
+      toast('ההתראות פעילות 🔔');
+    } catch (e) {
+      toast('לא הצלחתי להפעיל התראות: ' + e.message);
+    }
+  }
+  async function disablePush() {
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.getSubscription();
+      if (sub) { await api('POST', 'push/unsubscribe', { endpoint: sub.endpoint }).catch(() => {}); await sub.unsubscribe(); }
+    } catch {}
+    S.push = 'off';
+    render();
+  }
+
   // ---------- api ----------
   async function api(method, path, body) {
     const r = await fetch('/api/' + path, {
@@ -147,6 +198,7 @@
   function logout(silent) {
     localStorage.removeItem(LS);
     S.token = null; S.data = null; S.raw = '';
+    syncTokenToSW();
     closeSheet();
     if (!silent) toast('התנתקת');
     render();
@@ -204,7 +256,7 @@
   function render() {
     if (!S.token || !S.data) { if (!S.token) renderOnboarding(); return; }
     const d = D();
-    const myOpen = d.chores.filter((c) => (c.current.assignee === me().id && !c.current.done) || (c.overdue && c.overdue.assignee === me().id)).length;
+    const myOpen = d.duty && d.duty.member_id === me().id && d.duty.status !== 'upcoming' ? 1 : 0;
     const swapsToMe = d.swaps.filter((s) => s.to_member === me().id).length;
     const urgent = d.shopping.filter((s) => !s.bought_at && s.urgent).length;
     const openIssues = d.issues.filter((i) => i.status !== 'done').length;
@@ -281,35 +333,25 @@
       </div>`).join('');
   }
   function swapCards() {
-    const d = D();
-    return d.swaps.filter((s) => s.to_member === me().id).map((s) => {
-      const c = d.chores.find((x) => x.id === s.chore_id);
-      if (!c) return '';
-      const r = { start: 0, end: 0 };
-      const diff = s.period - c.current.period;
-      r.start = c.current.start + diff * c.freq_days; r.end = r.start + c.freq_days - 1;
-      return `<div class="card" style="outline:2px solid var(--warn);outline-offset:-2px">
-        <div class="row">${av(s.from_member)}<div class="grow"><b>${esc(M(s.from_member).name)}</b> מבקש/ת להחליף איתך תור
-        <div class="small muted">${c.icon || ''} ${esc(c.name)} · ${periodLabel(r, c.freq_days)}. בתמורה התור הבא שלך במטלה הזו עובר אליו/ה</div></div></div>
+    return D().swaps.filter((s) => s.to_member === me().id && s.chore_id === 'duty').map((s) => `<div class="card" style="outline:2px solid var(--warn);outline-offset:-2px">
+        <div class="row">${av(s.from_member)}<div class="grow"><b>${esc(M(s.from_member).name)}</b> מבקש/ת שתיקח/י את התורנות עכשיו
+        <div class="small muted">בתמורה אתם מתחלפים במקום בסדר התורות</div></div></div>
         <div class="row" style="margin-top:10px"><button class="btn primary grow" data-a="swap-accept" data-id="${s.id}">מאשר/ת</button><button class="btn grow" data-a="swap-reject" data-id="${s.id}">לא הפעם</button></div>
-      </div>`;
-    }).join('');
+      </div>`).join('');
   }
   function viewHome() {
     const d = D();
-    const mine = d.chores.filter((c) => (c.current.assignee === me().id && !c.current.done) || (c.overdue && c.overdue.assignee === me().id));
     const openShop = d.shopping.filter((s) => !s.bought_at);
     const urgent = openShop.filter((s) => s.urgent).length;
     const openIssues = d.issues.filter((i) => i.status !== 'done').length;
-    const doneMine = d.chores.filter((c) => c.current.assignee === me().id && c.current.done).length;
     const activePolls = d.polls.filter((p) => !p.closed && !p.votes.some((v) => v.member_id === me().id));
     const notes = d.notices.filter((n) => n.kind === 'note');
     return `
       ${installBanner(false)}
       ${storeBanners()}
       ${swapCards()}
-      <div class="section-title">המטלות שלי <button class="link" data-a="tab" data-tab="chores">לכל התורנות</button></div>
-      ${mine.length ? mine.map((c) => choreCard(c)).join('') : `<div class="card empty"><span class="big">${doneMine ? '🎉' : '😌'}</span>${doneMine ? 'סיימת את כל המטלות שלך לתקופה הזו' : 'אין לך מטלות בתקופה הזו'}</div>`}
+      <div class="section-title">תורנות ניקיון <button class="link" data-a="tab" data-tab="chores">לפרטים</button></div>
+      ${dutyCard(false)}
       <div class="hl">
         <div class="stat" data-a="tab" data-tab="shop" data-sub="list"><div class="n">${openShop.length}</div><div class="l">ברשימת הקניות${urgent ? ` · <span style="color:var(--danger)">${urgent} דחוף</span>` : ''}</div></div>
         <div class="stat" data-a="tab" data-tab="issues"><div class="n">${openIssues}</div><div class="l">תקלות פתוחות</div></div>
@@ -335,106 +377,108 @@
     </div>`;
   }
 
-  // ---------- chores ----------
-  function choreCard(c, opts = {}) {
-    const d = D();
-    const cur = c.current;
-    const mine = cur.assignee === me().id;
-    const done = cur.done;
-    const pendingSwap = d.swaps.find((s) => s.chore_id === c.id && s.period === cur.period);
-    const ov = c.overdue;
-    const cls = ['card', mine && !done ? 'mine' : '', ov && !opts.noOverdue ? 'overdue' : ''].join(' ');
+  // ---------- weekly duty ----------
+  const rng = (a, b) => `<span dir="ltr" style="unicode-bidi:isolate">${fmtDay(a)}–${fmtDay(b)}</span>`;
+  const dutyRange = (d) => `${dayName(d.period_start)} ${fmtDay(d.period_start)} – ${dayName(d.period_end)} ${fmtDay(d.period_end)}`;
+  function dutyCard(full) {
+    const d = D().duty;
+    if (!d) return '<div class="card empty">אין שותפים עדיין</div>';
+    const mine = d.member_id === me().id;
+    const pending = D().swaps.find((s) => s.chore_id === 'duty');
+    let cls = 'card';
+    let status;
+    if (d.status === 'upcoming') status = `<span class="tag accent">מתחיל/ה ב${dayName(d.period_start)} ${fmtDay(d.period_start)}</span>`;
+    else if (d.status === 'late') { cls += ' overdue'; status = `<span class="tag danger">⚠️ באיחור ${d.late_days} ${d.late_days === 1 ? 'יום' : 'ימים'}. התור לא עובר עד שיסומן "בוצע"</span>`; }
+    else { if (mine) cls += ' mine'; status = `<span class="tag ${d.days_left <= 2 ? 'warn' : ''}">${d.days_left === 1 ? 'היום היום האחרון' : `נשארו ${d.days_left} ימים`}</span>`; }
+    const l = d.last;
+    const last = l ? `<div class="row small" style="background:var(--ok-soft);border-radius:12px;padding:8px 10px;margin-bottom:12px">✅
+        <span class="grow">${esc(M(l.member_id).name)} סיים/ה את התורנות ${rel(l.done_at)}${l.done_by !== l.member_id ? ` (סומן ע״י ${esc(M(l.done_by).name)})` : ''}</span>
+        ${l.image_id ? `<button class="icon-btn" data-a="view-img" data-id="${l.image_id}">🖼</button>` : ''}
+        ${d.can_undo ? '<button class="btn ghost sm" data-a="duty-undo">ביטול</button>' : ''}</div>` : '';
+    const showDone = d.status !== 'upcoming' || mine;
     return `<div class="${cls}">
-      <div class="chore ${done ? 'done' : ''}">
-        <div class="emoji">${done ? '✅' : esc(c.icon || '✨')}</div>
-        <div class="grow">
-          <div class="title">${esc(c.name)}</div>
-          <div class="small muted">${freqLabel(c.freq_days)} · ${periodLabel(cur, c.freq_days)}</div>
-          <div class="row wrap" style="gap:6px;margin-top:6px">
-            ${cur.assignee ? who(cur.assignee) : '<span class="muted small">אין שותפים</span>'}
-            ${done ? `<span class="tag ok">✓ ${esc(M(done.member_id).name)} · ${rel(done.done_at)}</span>` : ''}
-            ${pendingSwap ? `<span class="tag warn">⇄ ממתין ל${esc(M(pendingSwap.to_member).name)}</span>` : ''}
-          </div>
-        </div>
-      </div>
-      ${ov ? `<div class="row" style="margin-top:10px;background:var(--danger-soft);border-radius:12px;padding:8px 10px">
-        <div class="grow small" style="color:var(--danger)">⚠️ לא בוצע בתקופה הקודמת (${periodLabel(ov, c.freq_days)}) · ${esc(M(ov.assignee).name)}</div>
-        <button class="btn sm danger" data-a="chore-done" data-id="${c.id}" data-period="${ov.period}">בוצע</button></div>` : ''}
-      <div class="row" style="margin-top:10px;gap:6px">
-        ${!done ? `
-          <button class="btn primary grow" data-a="chore-done" data-id="${c.id}" data-period="${cur.period}">✓ בוצע</button>
-          <button class="btn" data-a="chore-done-photo" data-id="${c.id}" data-period="${cur.period}" aria-label="בוצע עם תמונה">📷</button>
-          ${mine && !pendingSwap ? `<button class="btn" data-a="swap-ask" data-id="${c.id}" data-period="${cur.period}">⇄ החלפה</button>` : ''}
-          ${pendingSwap && pendingSwap.from_member === me().id ? `<button class="btn" data-a="swap-reject" data-id="${pendingSwap.id}">ביטול בקשה</button>` : ''}
-        ` : `
-          ${done.image_id ? `<button class="btn sm" data-a="view-img" data-id="${done.image_id}">🖼 תמונה</button>` : ''}
-          <span class="grow"></span>
-          <button class="btn ghost sm" data-a="chore-undo" data-id="${c.id}" data-period="${cur.period}">ביטול סימון</button>
-        `}
-      </div>
-      ${opts.upcoming ? `<div class="upcoming">${c.upcoming.map((u) => `<button class="u" style="border:0;background:none;cursor:pointer" data-a="assign" data-id="${c.id}" data-period="${u.period}">${av(u.assignee, 'sm')}<span>${periodLabel(u, c.freq_days).split('–')[0]}</span></button>`).join('')}</div>` : ''}
+      ${last}
+      <div class="small muted">${d.status === 'upcoming' ? 'התורן/ית הבא/ה' : 'התורן/ית עכשיו'}</div>
+      <div class="row" style="margin:8px 0">${av(d.member_id, 'lg')}<div class="grow"><div style="font-size:20px;font-weight:700">${esc(nm(d.member_id))}</div><div class="small muted">${dutyRange(d)}</div></div></div>
+      <div class="row wrap" style="gap:6px">${status}${pending ? `<span class="tag warn">⇄ ממתין לאישור של ${esc(M(pending.to_member).name)}</span>` : ''}</div>
+      ${showDone ? `<div class="row" style="margin-top:12px;gap:6px">
+        <button class="btn primary grow" data-a="duty-done">✓ ${mine ? 'סיימתי את התורנות' : 'התורנות בוצעה'}</button>
+        <button class="btn" data-a="duty-done-photo" aria-label="בוצע עם תמונה">📷</button>
+        ${mine && !pending && D().members.length > 1 ? '<button class="btn" data-a="swap-ask" aria-label="החלפה">⇄</button>' : ''}
+        ${pending && pending.from_member === me().id ? `<button class="btn" data-a="swap-reject" data-id="${pending.id}">ביטול בקשה</button>` : ''}
+      </div>` : ''}
+      ${full && D().tasks.length ? `<hr class="sep"><div class="small muted" style="margin-bottom:6px">התורנות כוללת</div>
+        <div class="chips">${D().tasks.map((t) => `<span class="tag" style="font-size:13px;padding:4px 10px">${esc(t.icon || '')} ${esc(t.name)}</span>`).join('')}</div>` : ''}
     </div>`;
+  }
+  function queueCard() {
+    const d = D().duty;
+    const ms = D().members;
+    if (!d || ms.length < 2) return '';
+    const i0 = ms.findIndex((m) => m.id === d.member_id);
+    const t = D().today;
+    let s = d.status === 'upcoming' ? d.period_start + 7 : Math.max(t - ((t + 4) % 7) + 7, d.period_end + 1);
+    const rows = [];
+    for (let k = 1; k <= Math.min(4, ms.length); k++) {
+      const m = ms[(i0 + k) % ms.length];
+      rows.push(`<div class="row" style="padding:6px 0">${av(m.id, 'sm')}<span class="grow">${esc(nm(m.id))}</span><span class="small muted">${rng(s, s + 6)}</span></div>`);
+      s += 7;
+    }
+    return `<div class="section-title">הבאים בתור</div><div class="card">${rows.join('')}
+      <p class="small muted" style="margin:6px 0 0">התאריכים בהנחה שכולם מסיימים בזמן. התור עובר רק כשמסמנים "בוצע". את הסדר משנים ב"עוד" ואז "שותפים".</p></div>`;
+  }
+  function pushCard() {
+    if (S.push === 'on') return '';
+    if (isIOS() && !isStandalone()) {
+      return `<div class="card row" style="background:var(--warn-soft)"><span style="font-size:26px">🔔</span>
+        <div class="grow small"><b>רוצה תזכורות לטלפון?</b><br>באייפון ההתראות עובדות רק אחרי שמתקינים את Dira כאפליקציה.</div>
+        <button class="btn primary sm" data-a="install">התקנה</button></div>`;
+    }
+    if (S.push === 'unsupported') return '';
+    return `<div class="card row" style="background:var(--warn-soft)"><span style="font-size:26px">🔔</span>
+      <div class="grow small"><b>הפעלת התראות</b><br>תזכורת כשהתורנות אצלך, ועדכון כשמישהו בסופר</div>
+      <button class="btn primary sm" data-a="push-enable">הפעלה</button></div>`;
   }
   function viewChores() {
     const d = D();
     const sub = S.sub.chores;
     const seg = `<div class="seg">
-      ${[['now', 'עכשיו'], ['plan', 'לוח'], ['stats', 'סטטיסטיקה'], ['manage', 'ניהול']].map(([k, l]) => `<button class="${sub === k ? 'on' : ''}" data-a="sub" data-k="chores" data-v="${k}">${l}</button>`).join('')}
+      ${[['now', 'תורנות'], ['history', 'היסטוריה'], ['manage', 'הגדרות']].map(([k, l]) => `<button class="${sub === k ? 'on' : ''}" data-a="sub" data-k="chores" data-v="${k}">${l}</button>`).join('')}
     </div>`;
-    if (!d.chores.length && sub !== 'manage') return seg + `<div class="card empty"><span class="big">🧽</span>אין מטלות עדיין<br><br><button class="btn primary" data-a="chore-new">הוספת מטלה</button></div>`;
-    if (sub === 'now') {
-      const sorted = [...d.chores].sort((a, b) => {
-        const sc = (c) => (c.overdue ? 0 : 2) + (c.current.done ? 3 : 0) + (c.current.assignee === me().id ? 0 : 1);
-        return sc(a) - sc(b);
-      });
-      return seg + swapCards() + sorted.map((c) => choreCard(c)).join('');
-    }
-    if (sub === 'plan') {
-      return seg + `<p class="small muted" style="margin:0 4px 10px">לחיצה על תור עתידי מאפשרת לשבץ אותו ידנית למישהו אחר.</p>` +
-        d.chores.map((c) => `<div class="card">
-          <div class="row"><span style="font-size:22px">${esc(c.icon || '✨')}</span><div class="grow"><b>${esc(c.name)}</b><div class="small muted">${freqLabel(c.freq_days)}</div></div></div>
-          <div class="upcoming">
-            <button class="u" style="border:0;background:none" data-a="assign" data-id="${c.id}" data-period="${c.current.period}">${av(c.current.assignee)}<span><b>עכשיו</b></span></button>
-            ${c.upcoming.map((u) => `<button class="u" style="border:0;background:none;cursor:pointer" data-a="assign" data-id="${c.id}" data-period="${u.period}">${av(u.assignee)}<span>${periodLabel(u, c.freq_days).split('–')[0]}</span></button>`).join('')}
-          </div></div>`).join('');
-    }
-    if (sub === 'stats') {
-      const rows = d.members.map((m) => {
-        const s = d.stats.find((x) => x.member_id === m.id) || { cnt: 0, pts: 0 };
-        return { m, cnt: s.cnt || 0, pts: s.pts || 0 };
-      }).sort((a, b) => b.pts - a.pts);
-      const max = Math.max(1, ...rows.map((r) => r.pts));
-      return seg + `<div class="card"><div class="small muted" style="margin-bottom:10px">החודש · נקודות לפי משקל המטלה</div>
-        ${rows.map((r, i) => `<div style="margin-bottom:12px"><div class="row between small" style="margin-bottom:5px"><span class="who">${i === 0 && r.pts ? '👑 ' : ''}${av(r.m.id, 'sm')} ${esc(r.m.name)}</span><span><b>${r.pts}</b> נק׳ · ${r.cnt} מטלות</span></div>
-        <div class="bar"><i style="width:${(r.pts / max) * 100}%;background:${esc(r.m.color)}"></i></div></div>`).join('')}
+    if (sub === 'now') return seg + pushCard() + swapCards() + dutyCard(true) + queueCard();
+    if (sub === 'history') {
+      const stats = d.dutyStats.slice().sort((a, b) => b.count - a.count);
+      const max = Math.max(1, ...stats.map((s) => s.count));
+      return seg + `<div class="card"><div class="small muted" style="margin-bottom:10px">תורנויות שבוצעו</div>
+        ${stats.map((s) => `<div style="margin-bottom:12px"><div class="row between small" style="margin-bottom:5px"><span class="who">${av(s.member_id, 'sm')} ${esc(M(s.member_id).name)}</span>
+          <span><b>${s.count}</b> תורנויות${s.late ? ` · <span style="color:var(--danger)">${s.late} באיחור</span>` : ''}</span></div>
+          <div class="bar"><i style="width:${(s.count / max) * 100}%;background:${esc(M(s.member_id).color)}"></i></div></div>`).join('')}
       </div>
-      <div class="section-title">בוצע לאחרונה</div>
-      <div class="card">${d.recentDone.length ? d.recentDone.map((r) => `<div class="row" style="padding:7px 0">
-        <span style="font-size:20px">${esc(r.icon || '✨')}</span><div class="grow"><div>${esc(r.name)}</div><div class="small muted">${esc(M(r.member_id).name)} · ${rel(r.done_at)}</div></div>
-        ${r.image_id ? `<button class="icon-btn" data-a="view-img" data-id="${r.image_id}">🖼</button>` : ''}</div>`).join('') : '<div class="empty">עוד לא בוצע כלום</div>'}</div>`;
+      <div class="section-title">יומן</div>
+      <div class="card">${d.dutyLog.length ? d.dutyLog.map((l) => `<div class="row" style="padding:8px 0;border-bottom:1px solid var(--line)">
+        ${av(l.member_id, 'sm')}<div class="grow"><div>${esc(M(l.member_id).name)} <span class="small muted">· שבוע ${rng(l.period_start, l.period_end)}</span></div>
+        <div class="small muted">בוצע ${rel(l.done_at)}${l.done_by !== l.member_id ? ` · סומן ע״י ${esc(M(l.done_by).name)}` : ''}</div></div>
+        ${l.late ? `<span class="tag danger">איחור ${l.late} ימ׳</span>` : '<span class="tag ok">בזמן</span>'}
+        ${l.image_id ? `<button class="icon-btn" data-a="view-img" data-id="${l.image_id}">🖼</button>` : ''}
+      </div>`).join('') : '<div class="empty">עוד לא בוצעה תורנות</div>'}</div>`;
     }
-    // manage
-    return seg + `<p class="small muted" style="margin:0 4px 10px">הסבב עובר בין השותפים לפי הסדר שלהם (אפשר לשנות אותו ב"עוד" ואז "שותפים"). לכל מטלה יש נקודת התחלה אחרת, כך שהעומס מתחלק.</p>` +
-      d.chores.map((c) => `<div class="card"><div class="row">
-        <span style="font-size:24px">${esc(c.icon || '✨')}</span>
-        <div class="grow"><b>${esc(c.name)}</b><div class="small muted">${freqLabel(c.freq_days)} · משקל ${c.weight}</div></div>
-        <button class="btn sm" data-a="chore-edit" data-id="${c.id}">עריכה</button></div></div>`).join('') +
-      `<button class="btn primary block" data-a="chore-new">+ מטלה חדשה</button>`;
+    return seg + `<div class="section-title">מה התורנות כוללת</div>
+      <div class="card">${d.tasks.map((t) => `<div class="row" style="padding:6px 0"><span style="font-size:22px">${esc(t.icon || '✨')}</span><span class="grow">${esc(t.name)}</span>
+        <button class="btn sm" data-a="task-edit" data-id="${t.id}">עריכה</button></div>`).join('') || '<div class="empty">אין משימות</div>'}
+        <button class="btn primary block" style="margin-top:8px" data-a="task-new">+ משימה</button></div>
+      <div class="section-title">התורן/ית הנוכחי/ת</div>
+      <div class="card"><select class="input" data-a-change="duty-set">${d.members.map((m) => `<option value="${m.id}" ${d.duty && d.duty.member_id === m.id ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}</select>
+      <p class="small muted" style="margin:8px 0 0">שינוי ידני, למשל כשמישהו לא בבית. התאריכים לא משתנים.</p></div>`;
   }
   const CHORE_ICONS = ['🚽', '🚿', '🛁', '🍳', '🍽️', '🧹', '🧽', '🪣', '🗑️', '♻️', '🪟', '🛋️', '🧺', '🌿', '🐾', '🧊', '✨'];
-  function choreSheet(c) {
-    const icon = c ? c.icon : '🧹';
-    sheetCtx.icon = icon;
-    const freqs = [[1, 'כל יום'], [2, 'כל יומיים'], [3, 'כל 3 ימים'], [7, 'שבועי'], [14, 'דו־שבועי'], [28, 'חודשי']];
+  function taskSheet(t) {
+    const icon = t ? t.icon : '🧹';
     openSheet(`
-      <h2>${c ? 'עריכת מטלה' : 'מטלה חדשה'}</h2>
-      <div class="field"><label>שם</label><input class="input" id="c-name" value="${esc(c ? c.name : '')}" placeholder="למשל: ניקוי מקרר" maxlength="60" ${c ? '' : 'autofocus'}></div>
+      <h2>${t ? 'עריכת משימה' : 'משימה חדשה'}</h2>
+      <div class="field"><label>שם</label><input class="input" id="c-name" value="${esc(t ? t.name : '')}" placeholder="למשל: ניקוי מקרר" maxlength="60" ${t ? '' : 'autofocus'}></div>
       <div class="field"><label>אייקון</label><div class="emoji-pick">${CHORE_ICONS.map((e) => `<button class="${e === icon ? 'on' : ''}" data-a="pick-icon" data-v="${e}">${e}</button>`).join('')}</div></div>
-      <div class="field"><label>תדירות</label><select class="input" id="c-freq">${freqs.map(([v, l]) => `<option value="${v}" ${(c ? c.freq_days : 7) === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
-      <div class="field"><label>משקל (כמה המטלה "שווה" בסטטיסטיקה)</label><select class="input" id="c-weight">${[1, 2, 3, 4, 5].map((w) => `<option value="${w}" ${(c ? c.weight : 2) === w ? 'selected' : ''}>${w}${w === 1 ? ' · קלה' : w === 5 ? ' · כבדה' : ''}</option>`).join('')}</select></div>
-      ${c ? '<p class="small muted">שינוי תדירות מאפס את הסבב של המטלה הזו.</p>' : ''}
-      <button class="btn primary block" data-a="chore-save" data-id="${c ? c.id : ''}">שמירה</button>
-      ${c ? `<button class="btn danger block" style="margin-top:8px" data-a="chore-del" data-id="${c.id}">מחיקת מטלה</button>` : ''}
+      <button class="btn primary block" data-a="task-save" data-id="${t ? t.id : ''}">שמירה</button>
+      ${t ? `<button class="btn danger block" style="margin-top:8px" data-a="task-del" data-id="${t.id}">מחיקה</button>` : ''}
     `, { icon });
   }
 
@@ -672,6 +716,7 @@
         <button class="btn block" data-a="copy" data-v="${esc(loginLink)}">העתקת קישור כניסה אישי</button>
       </div>
       ${isStandalone() ? '<div class="card small muted">✓ Dira מותקנת כאפליקציה במכשיר הזה</div>' : installBanner(true)}
+      ${S.push === 'on' ? '<div class="card row"><span class="grow">🔔 ההתראות פעילות במכשיר הזה</span><button class="btn sm" data-a="push-disable">כיבוי</button></div>' : pushCard()}
       <button class="btn block" data-a="logout">התנתקות מהמכשיר הזה</button>
       <button class="btn danger block" style="margin-top:8px" data-a="leave">עזיבת הדירה</button>
       <p class="small muted" style="text-align:center;margin-top:16px">Dira · ${esc(d.apartment.name)}</p>`;
@@ -700,6 +745,7 @@
           : await api('POST', 'join', { code: o.code, memberName: o.memberName });
         S.token = j.token;
         localStorage.setItem(LS, j.token);
+        syncTokenToSW();
         history.replaceState(null, '', '/');
         if (o.mode === 'create') { S.tab = 'more'; S.sub.more = 'members'; }
         await refresh(true);
@@ -724,39 +770,38 @@
     'notice-del': async (ds) => { closeSheet(); await act('DELETE', 'notices/' + ds.id, null, 'נמחק'); },
 
     // chores
-    'chore-done': (ds) => act('POST', `chores/${ds.id}/done`, { period: +ds.period }, 'כל הכבוד! ✨'),
-    'chore-done-photo': async (ds) => {
+    'duty-done': async () => {
+      const d = D().duty;
+      if (d.member_id !== me().id && !confirm(`לסמן שהתורנות של ${M(d.member_id).name} בוצעה?`)) return;
+      await act('POST', 'duty/done', {}, 'כל הכבוד! ✨ התור עבר הלאה');
+    },
+    'duty-done-photo': async () => {
       const image = await pickImage();
       if (!image) return;
       toast('מעלה…');
-      await act('POST', `chores/${ds.id}/done`, { period: +ds.period, image }, 'כל הכבוד! ✨');
+      await act('POST', 'duty/done', { image }, 'כל הכבוד! ✨ התור עבר הלאה');
     },
-    'chore-undo': (ds) => act('DELETE', `chores/${ds.id}/done/${ds.period}`),
-    'chore-new': () => choreSheet(null),
-    'chore-edit': (ds) => choreSheet(D().chores.find((c) => c.id === ds.id)),
+    'duty-undo': () => act('POST', 'duty/undo', null, 'בוטל'),
+    'task-new': () => taskSheet(null),
+    'task-edit': (ds) => taskSheet(D().tasks.find((t) => t.id === ds.id)),
     'pick-icon': (ds, el) => { sheetCtx.icon = ds.v; el.parentElement.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b === el)); },
-    'chore-save': async (ds) => {
-      const body = { name: val('c-name'), icon: sheetCtx.icon, freq_days: +val('c-freq'), weight: +val('c-weight') };
+    'task-save': async (ds) => {
+      const body = { name: val('c-name'), icon: sheetCtx.icon };
       if (!body.name) return toast('צריך שם');
       closeSheet();
       await act(ds.id ? 'PATCH' : 'POST', ds.id ? 'chores/' + ds.id : 'chores', body, 'נשמר');
     },
-    'chore-del': async (ds) => { if (!confirm('למחוק את המטלה?')) return; closeSheet(); await act('DELETE', 'chores/' + ds.id, null, 'נמחק'); },
-    'swap-ask': (ds) => {
+    'task-del': async (ds) => { closeSheet(); await act('DELETE', 'chores/' + ds.id, null, 'נמחק'); },
+    'swap-ask': () => {
       const others = D().members.filter((m) => m.id !== me().id);
-      if (!others.length) return toast('אין עם מי להחליף עדיין');
-      openSheet(`<h2>עם מי להחליף?</h2><p class="small muted">השותף/ה ייקח/תיקח את התור שלך עכשיו, ואת/ה תיקח/י את התור הבא שלו/ה במטלה הזו.</p>
-        ${others.map((m) => `<button class="btn block" style="justify-content:flex-start;margin-bottom:8px" data-a="swap-send" data-id="${ds.id}" data-period="${ds.period}" data-to="${m.id}">${av(m.id)} ${esc(m.name)}</button>`).join('')}`);
+      openSheet(`<h2>עם מי להחליף?</h2><p class="small muted">השותף/ה לוקח/ת את התורנות עכשיו, ואתם מתחלפים במקום בסדר התורות.</p>
+        ${others.map((m) => `<button class="btn block" style="justify-content:flex-start;margin-bottom:8px" data-a="swap-send" data-to="${m.id}">${av(m.id)} ${esc(m.name)}</button>`).join('')}`);
     },
-    'swap-send': async (ds) => { closeSheet(); await act('POST', 'swaps', { chore_id: ds.id, period: +ds.period, to_member: ds.to }, 'הבקשה נשלחה'); },
-    'swap-accept': (ds) => act('POST', `swaps/${ds.id}/accept`, null, 'הוחלף ✓'),
+    'swap-send': async (ds) => { closeSheet(); await act('POST', 'swaps', { to_member: ds.to }, 'הבקשה נשלחה'); },
+    'swap-accept': (ds) => act('POST', `swaps/${ds.id}/accept`, null, 'התורנות אצלך עכשיו'),
     'swap-reject': (ds) => act('POST', `swaps/${ds.id}/reject`),
-    assign: (ds) => {
-      const c = D().chores.find((x) => x.id === ds.id);
-      openSheet(`<h2>${esc(c.icon || '')} ${esc(c.name)}</h2><p class="small muted">שיבוץ ידני לתור הזה</p>
-        ${D().members.map((m) => `<button class="btn block" style="justify-content:flex-start;margin-bottom:8px" data-a="assign-set" data-id="${ds.id}" data-period="${ds.period}" data-m="${m.id}">${av(m.id)} ${esc(m.name)}</button>`).join('')}`);
-    },
-    'assign-set': async (ds) => { closeSheet(); await act('POST', `chores/${ds.id}/assign`, { period: +ds.period, member_id: ds.m }, 'שובץ'); },
+    'push-enable': () => enablePush(),
+    'push-disable': () => disablePush(),
 
     // shopping
     'draft-kind': (ds) => { S.draft.kind = ds.v; render(); },
@@ -930,6 +975,7 @@
   });
   document.addEventListener('change', (ev) => {
     const el = ev.target.closest('[data-a-change]');
+    if (el && el.dataset.aChange === 'duty-set') act('PATCH', 'duty', { member_id: el.value }, 'עודכן');
     if (el && el.dataset.aChange === 'issue-assignee') {
       act('PATCH', 'issues/' + el.dataset.id, { assignee: el.value }, 'עודכן');
     }
@@ -965,7 +1011,11 @@
       S.onb.code = q.get('join').toUpperCase();
       try { const j = await api('GET', 'invite/' + encodeURIComponent(S.onb.code)); S.onb.invitedTo = j.name; } catch {}
     }
-    if (S.token) await refresh(true); else render();
+    const tab = q.get('tab');
+    if (tab && ['home', 'chores', 'shop', 'issues', 'more'].includes(tab)) { S.tab = tab; history.replaceState(null, '', '/'); }
     if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+    syncTokenToSW();
+    if (S.token) await refresh(true); else render();
+    checkPush().then(() => { if (S.data) render(); });
   })();
 })();

@@ -16,6 +16,13 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS poll_options (id TEXT PRIMARY KEY, poll_id TEXT NOT NULL, text TEXT NOT NULL, position INTEGER NOT NULL DEFAULT 0)`,
   `CREATE TABLE IF NOT EXISTS poll_votes (poll_id TEXT NOT NULL, member_id TEXT NOT NULL, option_id TEXT NOT NULL, PRIMARY KEY (poll_id, member_id))`,
   `CREATE TABLE IF NOT EXISTS images (id TEXT PRIMARY KEY, apartment_id TEXT NOT NULL, mime TEXT NOT NULL, data TEXT NOT NULL, created_at INTEGER NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS duty (apartment_id TEXT PRIMARY KEY, member_id TEXT NOT NULL, period_start INTEGER NOT NULL, period_end INTEGER NOT NULL, started_at INTEGER NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS duty_log (id TEXT PRIMARY KEY, apartment_id TEXT NOT NULL, member_id TEXT NOT NULL, period_start INTEGER NOT NULL, period_end INTEGER NOT NULL, done_at INTEGER NOT NULL, done_by TEXT NOT NULL, image_id TEXT)`,
+  `CREATE TABLE IF NOT EXISTS push_subs (endpoint TEXT PRIMARY KEY, member_id TEXT NOT NULL, apartment_id TEXT NOT NULL, created_at INTEGER NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS notif_log (member_id TEXT NOT NULL, kind TEXT NOT NULL, day INTEGER NOT NULL, PRIMARY KEY (member_id, kind, day))`,
+  `CREATE TABLE IF NOT EXISTS notifications (id TEXT PRIMARY KEY, member_id TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL, url TEXT, created_at INTEGER NOT NULL, seen INTEGER NOT NULL DEFAULT 0)`,
+  `CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
+  `CREATE INDEX IF NOT EXISTS idx_duty_log_apt ON duty_log(apartment_id, done_at)`,
   `CREATE INDEX IF NOT EXISTS idx_members_apt ON members(apartment_id)`,
   `CREATE INDEX IF NOT EXISTS idx_shopping_apt ON shopping(apartment_id, cleared)`,
   `CREATE INDEX IF NOT EXISTS idx_notices_apt ON notices(apartment_id)`,
@@ -77,6 +84,107 @@ function startDayFor(freq) {
   return freq % 7 === 0 ? t - dow(t) : t;
 }
 
+function israelHour() {
+  return parseInt(new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Jerusalem', hour: '2-digit', hour12: false }).format(new Date()), 10) % 24;
+}
+function dayOfTs(ts) {
+  const s = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Jerusalem' }).format(new Date(ts));
+  const [y, m, d] = s.split('-').map(Number);
+  return Math.floor(Date.UTC(y, m - 1, d) / 86400000);
+}
+const fmtDay = (n) => { const d = new Date(n * 86400000); return `${d.getUTCDate()}/${d.getUTCMonth() + 1}`; };
+
+// ---------- weekly duty (one person per week, passes only when marked done) ----------
+async function activeMembers(db, A) {
+  return (await db.prepare('SELECT id, name, color, position FROM members WHERE apartment_id=? AND active=1 ORDER BY position').bind(A).all()).results;
+}
+function nextAfter(members, curId, curPos) {
+  const idx = members.findIndex((m) => m.id === curId);
+  if (idx >= 0) return members[(idx + 1) % members.length];
+  return members.find((m) => m.position > curPos) || members[0];
+}
+async function ensureDuty(db, A, members) {
+  members = members || (await activeMembers(db, A));
+  if (!members.length) return null;
+  let d = await db.prepare('SELECT * FROM duty WHERE apartment_id=?').bind(A).first();
+  if (!d) {
+    const t = todayNum();
+    const s = t - dow(t);
+    await db.prepare('INSERT OR IGNORE INTO duty (apartment_id, member_id, period_start, period_end, started_at) VALUES (?,?,?,?,?)').bind(A, members[0].id, s, s + 6, now()).run();
+    d = await db.prepare('SELECT * FROM duty WHERE apartment_id=?').bind(A).first();
+  } else if (!members.some((m) => m.id === d.member_id)) {
+    const gone = await db.prepare('SELECT position FROM members WHERE id=?').bind(d.member_id).first();
+    const nx = nextAfter(members, d.member_id, gone ? gone.position : -1);
+    await db.prepare('UPDATE duty SET member_id=? WHERE apartment_id=?').bind(nx.id, A).run();
+    d.member_id = nx.id;
+  }
+  return d;
+}
+
+// ---------- web push (VAPID, no payload; the service worker fetches the text) ----------
+const b64u = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+async function getVapid(db) {
+  let row = await db.prepare(`SELECT value FROM kv WHERE key='vapid'`).first();
+  if (row) return JSON.parse(row.value);
+  const kp = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']);
+  const jwk = await crypto.subtle.exportKey('jwk', kp.privateKey);
+  const raw = await crypto.subtle.exportKey('raw', kp.publicKey);
+  await db.prepare(`INSERT OR IGNORE INTO kv (key, value) VALUES ('vapid', ?)`).bind(JSON.stringify({ jwk, pub: b64u(raw) })).run();
+  row = await db.prepare(`SELECT value FROM kv WHERE key='vapid'`).first();
+  return JSON.parse(row.value);
+}
+async function vapidHeader(v, endpoint, subject) {
+  const enc = (o) => b64u(new TextEncoder().encode(JSON.stringify(o)));
+  const unsigned = enc({ typ: 'JWT', alg: 'ES256' }) + '.' + enc({ aud: new URL(endpoint).origin, exp: Math.floor(Date.now() / 1000) + 12 * 3600, sub: subject });
+  const jwk = { ...v.jwk, key_ops: ['sign'] };
+  const key = await crypto.subtle.importKey('jwk', jwk, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign']);
+  const sig = await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, key, new TextEncoder().encode(unsigned));
+  return `vapid t=${unsigned}.${b64u(sig)}, k=${v.pub}`;
+}
+async function notify(db, memberId, title, body, url, origin) {
+  await db.prepare('INSERT INTO notifications (id, member_id, title, body, url, created_at) VALUES (?,?,?,?,?,?)').bind(uid(), memberId, title, body, url || '/', now()).run();
+  const subs = (await db.prepare('SELECT endpoint FROM push_subs WHERE member_id=?').bind(memberId).all()).results;
+  if (!subs.length) return 0;
+  const v = await getVapid(db);
+  let sent = 0;
+  for (const s of subs) {
+    try {
+      const r = await fetch(s.endpoint, {
+        method: 'POST',
+        headers: { TTL: '86400', Urgency: 'high', Authorization: await vapidHeader(v, s.endpoint, origin || 'mailto:dira@dira.app'), 'Content-Length': '0' },
+      });
+      if (r.status === 404 || r.status === 410) await db.prepare('DELETE FROM push_subs WHERE endpoint=?').bind(s.endpoint).run();
+      else if (r.ok) sent++;
+    } catch {}
+  }
+  return sent;
+}
+// send at most once per member/kind/day
+async function notifyOnce(db, memberId, kind, title, body, url, origin) {
+  const r = await db.prepare('INSERT OR IGNORE INTO notif_log (member_id, kind, day) VALUES (?,?,?)').bind(memberId, kind, todayNum()).run();
+  if (r.meta && r.meta.changes) await notify(db, memberId, title, body, url, origin);
+}
+async function runReminders(db, A, origin) {
+  const h = israelHour();
+  if (h < 9 || h >= 22) return;
+  const d = await ensureDuty(db, A);
+  if (!d) return;
+  const t = todayNum();
+  if (t < d.period_start) return; // already done, next turn not started yet
+  const url = '/?tab=chores';
+  if (t > d.period_end) {
+    const late = t - d.period_end;
+    await notifyOnce(db, d.member_id, 'duty-late', '🧹 התורנות עדיין אצלך',
+      `התורנות של השבוע שהתחיל ב־${fmtDay(d.period_start)} באיחור של ${late} ${late === 1 ? 'יום' : 'ימים'}. היא נשארת אצלך עד שתסמן/י "בוצע".`, url, origin);
+  } else if (t === d.period_start) {
+    await notifyOnce(db, d.member_id, 'duty-start', '🧹 השבוע התורנות אצלך', `התורנות שלך עד ${fmtDay(d.period_end)}. בהצלחה!`, url, origin);
+  } else if (dow(t) >= 4) {
+    const left = d.period_end - t + 1;
+    await notifyOnce(db, d.member_id, 'duty-remind', '⏰ תזכורת תורנות',
+      left === 1 ? 'היום היום האחרון של התורנות שלך. אל תשכח/י לסמן "בוצע".' : `נשארו ${left} ימים לתורנות שלך השבוע.`, url, origin);
+  }
+}
+
 class HttpError extends Error {
   constructor(msg, status = 400) { super(msg); this.status = status; }
 }
@@ -91,24 +199,6 @@ async function saveImage(db, A, dataUrl) {
   await db.prepare('INSERT INTO images (id, apartment_id, mime, data, created_at) VALUES (?,?,?,?,?)').bind(id, A, m[1], m[2], now()).run();
   return id;
 }
-
-// ---------- chore rotation ----------
-async function loadRotation(db, A) {
-  const members = (await db.prepare('SELECT id, name, color, position FROM members WHERE apartment_id=? AND active=1 ORDER BY position').bind(A).all()).results;
-  const chores = (await db.prepare('SELECT * FROM chores WHERE apartment_id=? AND active=1 ORDER BY offset_').bind(A).all()).results;
-  const ov = (await db.prepare('SELECT o.* FROM chore_overrides o JOIN chores c ON c.id=o.chore_id WHERE c.apartment_id=?').bind(A).all()).results;
-  const overrides = new Map(ov.map((o) => [o.chore_id + ':' + o.period, o.member_id]));
-  return { members, chores, overrides };
-}
-function assigneeOf(ch, p, rot) {
-  const o = rot.overrides.get(ch.id + ':' + p);
-  if (o && rot.members.some((m) => m.id === o)) return o;
-  const n = rot.members.length;
-  if (!n) return null;
-  return rot.members[(((p + ch.offset_) % n) + n) % n].id;
-}
-const periodOf = (ch, day) => Math.floor((day - ch.start_day) / ch.freq_days);
-const rangeOf = (ch, p) => ({ start: ch.start_day + p * ch.freq_days, end: ch.start_day + p * ch.freq_days + ch.freq_days - 1 });
 
 // ---------- handlers ----------
 async function createApartment(db, body) {
@@ -151,35 +241,27 @@ async function joinApartment(db, body) {
   return json({ token });
 }
 
-async function getState({ db, me, A }) {
+async function getState({ db, me, A, waitUntil, origin }) {
   const t = now();
   const day = todayNum();
   const apt = await db.prepare('SELECT id,name,code FROM apartments WHERE id=?').bind(A).first();
-  const rot = await loadRotation(db, A);
-  const dones = (await db.prepare('SELECT d.* FROM chore_done d JOIN chores c ON c.id=d.chore_id WHERE c.apartment_id=? AND d.done_at > ?').bind(A, t - 120 * 86400000).all()).results;
-  const doneMap = new Map(dones.map((d) => [d.chore_id + ':' + d.period, d]));
-
-  const chores = rot.chores.map((ch) => {
-    const p = periodOf(ch, day);
-    const cur = { period: p, ...rangeOf(ch, p), assignee: assigneeOf(ch, p, rot), done: doneMap.get(ch.id + ':' + p) || null };
-    let overdue = null;
-    if (p > 0 && !doneMap.get(ch.id + ':' + (p - 1))) {
-      overdue = { period: p - 1, ...rangeOf(ch, p - 1), assignee: assigneeOf(ch, p - 1, rot) };
-    }
-    const upcoming = [];
-    for (let i = 1; i <= 6; i++) upcoming.push({ period: p + i, ...rangeOf(ch, p + i), assignee: assigneeOf(ch, p + i, rot) });
-    return { id: ch.id, name: ch.name, icon: ch.icon, weight: ch.weight, freq_days: ch.freq_days, current: cur, overdue, upcoming };
-  });
-
-  const monthStr = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Jerusalem' }).format(new Date()).slice(0, 7);
-  const [yy, mm] = monthStr.split('-').map(Number);
-  const monthStart = Date.UTC(yy, mm - 1, 1) - 3 * 3600000; // ~Israel midnight
-  const statsRows = (await db.prepare(
-    `SELECT d.member_id, COUNT(*) cnt, SUM(c.weight) pts FROM chore_done d JOIN chores c ON c.id=d.chore_id
-     WHERE c.apartment_id=? AND d.done_at >= ? GROUP BY d.member_id`).bind(A, monthStart).all()).results;
-  const recentDone = (await db.prepare(
-    `SELECT d.chore_id, d.member_id, d.done_at, d.image_id, c.name, c.icon FROM chore_done d JOIN chores c ON c.id=d.chore_id
-     WHERE c.apartment_id=? ORDER BY d.done_at DESC LIMIT 25`).bind(A).all()).results;
+  const members = await activeMembers(db, A);
+  const d = await ensureDuty(db, A, members);
+  if (waitUntil) waitUntil(runReminders(db, A, origin).catch(() => {}));
+  const tasks = (await db.prepare('SELECT id, name, icon FROM chores WHERE apartment_id=? AND active=1 ORDER BY offset_').bind(A).all()).results;
+  const logs = (await db.prepare('SELECT * FROM duty_log WHERE apartment_id=? ORDER BY done_at DESC LIMIT 200').bind(A).all()).results;
+  const dutyLog = logs.map((l) => ({ ...l, done_day: dayOfTs(l.done_at), late: Math.max(0, dayOfTs(l.done_at) - l.period_end) }));
+  const lastLog = dutyLog[0] || null;
+  const duty = d ? {
+    member_id: d.member_id,
+    period_start: d.period_start,
+    period_end: d.period_end,
+    status: day < d.period_start ? 'upcoming' : day > d.period_end ? 'late' : 'active',
+    late_days: Math.max(0, day - d.period_end),
+    days_left: d.period_end - day + 1,
+    last: lastLog && lastLog.done_at === d.started_at && (day < d.period_start || t - lastLog.done_at < 86400000) ? lastLog : null,
+    can_undo: !!(lastLog && lastLog.done_at === d.started_at && t - lastLog.done_at < 12 * 3600000),
+  } : null;
 
   const [shopping, frequent, inventory, notices, issues, info, polls, options, votes, swaps] = await Promise.all([
     db.prepare('SELECT * FROM shopping WHERE apartment_id=? AND cleared=0 ORDER BY urgent DESC, added_at DESC LIMIT 300').bind(A).all(),
@@ -200,10 +282,14 @@ async function getState({ db, me, A }) {
     today: day,
     apartment: apt,
     me: { id: me.id, name: me.name, color: me.color },
-    members: rot.members,
-    chores,
-    stats: statsRows,
-    recentDone,
+    members,
+    duty,
+    tasks,
+    dutyLog: dutyLog.slice(0, 30),
+    dutyStats: members.map((m) => {
+      const mine = dutyLog.filter((l) => l.member_id === m.id);
+      return { member_id: m.id, count: mine.length, late: mine.filter((l) => l.late > 0).length };
+    }),
     swaps: swaps.results,
     shopping: shopping.results,
     frequent: frequent.results.map((r) => r.name).filter((n) => !openNames.has(n)).slice(0, 16),
@@ -250,87 +336,91 @@ const routes = [
     return json({ ok: true });
   }],
 
-  // chores
+  // duty tasks (what the weekly duty includes — reference list, no per-task marking)
   ['POST', 'chores', async ({ db, A, body }) => {
     const name = str(body.name, 60);
-    if (!name) throw new HttpError('צריך שם למטלה');
-    const freq = Math.min(Math.max(parseInt(body.freq_days) || 7, 1), 60);
-    const weight = Math.min(Math.max(parseInt(body.weight) || 1, 1), 5);
+    if (!name) throw new HttpError('צריך שם');
     const mx = await db.prepare('SELECT COALESCE(MAX(offset_),-1) mx FROM chores WHERE apartment_id=?').bind(A).first();
     await db.prepare('INSERT INTO chores (id,apartment_id,name,icon,weight,freq_days,start_day,offset_,created_at) VALUES (?,?,?,?,?,?,?,?,?)')
-      .bind(uid(), A, name, str(body.icon, 8) || '✨', weight, freq, startDayFor(freq), mx.mx + 1, now()).run();
+      .bind(uid(), A, name, str(body.icon, 8) || '✨', 1, 7, 0, mx.mx + 1, now()).run();
     return json({ ok: true });
   }],
   ['PATCH', 'chores/:id', async ({ db, A, body, params }) => {
     const ch = await own(db, 'chores', params.id, A);
-    const name = str(body.name, 60) || ch.name;
-    const icon = str(body.icon, 8) || ch.icon;
-    const weight = body.weight ? Math.min(Math.max(parseInt(body.weight), 1), 5) : ch.weight;
-    const freq = body.freq_days ? Math.min(Math.max(parseInt(body.freq_days), 1), 60) : ch.freq_days;
-    const stmts = [];
-    if (freq !== ch.freq_days) {
-      stmts.push(db.prepare('UPDATE chores SET freq_days=?, start_day=? WHERE id=?').bind(freq, startDayFor(freq), ch.id));
-      stmts.push(db.prepare('DELETE FROM chore_overrides WHERE chore_id=?').bind(ch.id));
-    }
-    stmts.push(db.prepare('UPDATE chores SET name=?, icon=?, weight=? WHERE id=?').bind(name, icon, weight, ch.id));
-    await db.batch(stmts);
+    await db.prepare('UPDATE chores SET name=?, icon=? WHERE id=?').bind(str(body.name, 60) || ch.name, str(body.icon, 8) || ch.icon, ch.id).run();
     return json({ ok: true });
   }],
   ['DELETE', 'chores/:id', async ({ db, A, params }) => {
     await db.prepare('UPDATE chores SET active=0 WHERE id=? AND apartment_id=?').bind(params.id, A).run();
     return json({ ok: true });
   }],
-  ['POST', 'chores/:id/done', async ({ db, A, me, body, params }) => {
-    const ch = await own(db, 'chores', params.id, A);
-    const period = Number.isInteger(body.period) ? body.period : periodOf(ch, todayNum());
+
+  // weekly duty
+  ['POST', 'duty/done', async ({ db, A, me, body, waitUntil, origin }) => {
+    const members = await activeMembers(db, A);
+    const d = await ensureDuty(db, A, members);
+    if (!d) throw new HttpError('אין שותפים');
     const imageId = await saveImage(db, A, body.image);
-    await db.prepare('INSERT OR REPLACE INTO chore_done (chore_id,period,member_id,done_at,image_id) VALUES (?,?,?,?,?)')
-      .bind(ch.id, period, me.id, now(), imageId).run();
+    const ts = now();
+    const t = todayNum();
+    const nx = nextAfter(members, d.member_id, -1);
+    const ns = Math.max(t - dow(t) + 7, d.period_end + 1);
+    await db.batch([
+      db.prepare('INSERT INTO duty_log (id,apartment_id,member_id,period_start,period_end,done_at,done_by,image_id) VALUES (?,?,?,?,?,?,?,?)')
+        .bind(uid(), A, d.member_id, d.period_start, d.period_end, ts, me.id, imageId),
+      db.prepare('UPDATE duty SET member_id=?, period_start=?, period_end=?, started_at=? WHERE apartment_id=?').bind(nx.id, ns, ns + 6, ts, A),
+      db.prepare(`UPDATE swaps SET status='cancelled' WHERE apartment_id=? AND status='pending'`).bind(A),
+    ]);
+    const doer = members.find((m) => m.id === me.id);
+    const whose = d.member_id === me.id ? '' : ` (במקום ${(members.find((m) => m.id === d.member_id) || {}).name || ''})`;
+    waitUntil(Promise.all(members.filter((m) => m.id !== me.id).map((m) =>
+      notify(db, m.id, m.id === nx.id ? '🧹 התור הבא שלך' : '✨ הדירה נקייה',
+        m.id === nx.id ? `${doer.name} סיים/ה את התורנות${whose}. התורנות שלך מתחילה ב־${fmtDay(ns)}.` : `${doer.name} סיים/ה את התורנות${whose}. הבא/ה בתור: ${nx.name}.`,
+        '/?tab=chores', origin))).catch(() => {}));
     return json({ ok: true });
   }],
-  ['DELETE', 'chores/:id/done/:period', async ({ db, A, params }) => {
-    await own(db, 'chores', params.id, A);
-    await db.prepare('DELETE FROM chore_done WHERE chore_id=? AND period=?').bind(params.id, parseInt(params.period)).run();
+  ['POST', 'duty/undo', async ({ db, A }) => {
+    const d = await db.prepare('SELECT * FROM duty WHERE apartment_id=?').bind(A).first();
+    const last = await db.prepare('SELECT * FROM duty_log WHERE apartment_id=? ORDER BY done_at DESC LIMIT 1').bind(A).first();
+    if (!d || !last || last.done_at !== d.started_at) throw new HttpError('אי אפשר לבטל');
+    await db.batch([
+      db.prepare('UPDATE duty SET member_id=?, period_start=?, period_end=?, started_at=? WHERE apartment_id=?').bind(last.member_id, last.period_start, last.period_end, now(), A),
+      db.prepare('DELETE FROM duty_log WHERE id=?').bind(last.id),
+    ]);
     return json({ ok: true });
   }],
-  ['POST', 'chores/:id/assign', async ({ db, A, body, params }) => {
-    await own(db, 'chores', params.id, A);
+  ['PATCH', 'duty', async ({ db, A, body }) => {
+    await ensureDuty(db, A);
     await own(db, 'members', body.member_id, A);
-    await db.prepare('INSERT OR REPLACE INTO chore_overrides (chore_id,period,member_id) VALUES (?,?,?)').bind(params.id, parseInt(body.period), body.member_id).run();
+    await db.prepare('UPDATE duty SET member_id=? WHERE apartment_id=?').bind(body.member_id, A).run();
     return json({ ok: true });
   }],
 
-  // swaps
-  ['POST', 'swaps', async ({ db, A, me, body }) => {
-    const ch = await own(db, 'chores', body.chore_id, A);
-    await own(db, 'members', body.to_member, A);
-    if (body.to_member === me.id) throw new HttpError('אי אפשר להחליף עם עצמך');
-    const period = parseInt(body.period);
-    const dup = await db.prepare(`SELECT 1 FROM swaps WHERE chore_id=? AND period=? AND status='pending'`).bind(ch.id, period).first();
-    if (dup) throw new HttpError('כבר יש בקשת החלפה פתוחה לתור הזה');
+  // swaps (whole weekly duty)
+  ['POST', 'swaps', async ({ db, A, me, body, waitUntil, origin }) => {
+    const d = await ensureDuty(db, A);
+    const to = await own(db, 'members', body.to_member, A);
+    if (!d || d.member_id !== me.id) throw new HttpError('רק התורן/ית יכול/ה לבקש החלפה');
+    if (to.id === me.id) throw new HttpError('אי אפשר להחליף עם עצמך');
+    const dup = await db.prepare(`SELECT 1 FROM swaps WHERE apartment_id=? AND status='pending'`).bind(A).first();
+    if (dup) throw new HttpError('כבר יש בקשת החלפה פתוחה');
     await db.prepare('INSERT INTO swaps (id,apartment_id,chore_id,period,from_member,to_member,created_at) VALUES (?,?,?,?,?,?,?)')
-      .bind(uid(), A, ch.id, period, me.id, body.to_member, now()).run();
+      .bind(uid(), A, 'duty', d.period_start, me.id, to.id, now()).run();
+    waitUntil(notify(db, to.id, '⇄ בקשת החלפת תורנות', `${me.name} מבקש/ת שתיקח/י את התורנות עכשיו, ובתמורה הוא/היא יעבור/תעבור למקום שלך בסדר.`, '/', origin).catch(() => {}));
     return json({ ok: true });
   }],
-  ['POST', 'swaps/:id/accept', async ({ db, A, me, params }) => {
+  ['POST', 'swaps/:id/accept', async ({ db, A, me, params, waitUntil, origin }) => {
     const sw = await own(db, 'swaps', params.id, A);
     if (sw.to_member !== me.id || sw.status !== 'pending') throw new HttpError('לא ניתן לאשר', 403);
-    const rot = await loadRotation(db, A);
-    const ch = rot.chores.find((c) => c.id === sw.chore_id);
-    const stmts = [
+    const a = await own(db, 'members', sw.from_member, A);
+    const b = me;
+    await db.batch([
       db.prepare(`UPDATE swaps SET status='accepted' WHERE id=?`).bind(sw.id),
-      db.prepare('INSERT OR REPLACE INTO chore_overrides (chore_id,period,member_id) VALUES (?,?,?)').bind(sw.chore_id, sw.period, sw.to_member),
-    ];
-    if (ch) {
-      // give the requester the next turn that was the accepter's
-      for (let p = sw.period + 1; p <= sw.period + rot.members.length * 2 + 2; p++) {
-        if (assigneeOf(ch, p, rot) === sw.to_member) {
-          stmts.push(db.prepare('INSERT OR REPLACE INTO chore_overrides (chore_id,period,member_id) VALUES (?,?,?)').bind(sw.chore_id, p, sw.from_member));
-          break;
-        }
-      }
-    }
-    await db.batch(stmts);
+      db.prepare('UPDATE members SET position=? WHERE id=?').bind(b.position, a.id),
+      db.prepare('UPDATE members SET position=? WHERE id=?').bind(a.position, b.id),
+      db.prepare('UPDATE duty SET member_id=? WHERE apartment_id=? AND member_id=?').bind(b.id, A, a.id),
+    ]);
+    waitUntil(notify(db, a.id, '✓ ההחלפה אושרה', `${b.name} לוקח/ת את התורנות הנוכחית.`, '/', origin).catch(() => {}));
     return json({ ok: true });
   }],
   ['POST', 'swaps/:id/reject', async ({ db, A, me, params }) => {
@@ -338,6 +428,28 @@ const routes = [
     if (sw.to_member !== me.id && sw.from_member !== me.id) throw new HttpError('אין הרשאה', 403);
     await db.prepare(`UPDATE swaps SET status=? WHERE id=?`).bind(sw.from_member === me.id ? 'cancelled' : 'rejected', sw.id).run();
     return json({ ok: true });
+  }],
+
+  // push notifications
+  ['GET', 'push/key', async ({ db }) => json({ key: (await getVapid(db)).pub })],
+  ['POST', 'push/subscribe', async ({ db, A, me, body }) => {
+    const ep = body.subscription && body.subscription.endpoint;
+    if (!ep || !/^https:\/\//.test(ep)) throw new HttpError('מנוי לא תקין');
+    await db.prepare('INSERT OR REPLACE INTO push_subs (endpoint, member_id, apartment_id, created_at) VALUES (?,?,?,?)').bind(ep, me.id, A, now()).run();
+    return json({ ok: true });
+  }],
+  ['POST', 'push/unsubscribe', async ({ db, me, body }) => {
+    await db.prepare('DELETE FROM push_subs WHERE endpoint=? AND member_id=?').bind(String(body.endpoint || ''), me.id).run();
+    return json({ ok: true });
+  }],
+  ['POST', 'push/test', async ({ db, me, origin }) => {
+    const sent = await notify(db, me.id, '🔔 ההתראות פעילות', 'מעכשיו תקבל/י כאן תזכורות תורנות ועדכונים מהדירה.', '/', origin);
+    return json({ ok: true, sent });
+  }],
+  ['GET', 'notifications/pending', async ({ db, me }) => {
+    const items = (await db.prepare('SELECT id, title, body, url FROM notifications WHERE member_id=? AND seen=0 AND created_at > ? ORDER BY created_at DESC LIMIT 5').bind(me.id, now() - 86400000).all()).results;
+    await db.prepare('UPDATE notifications SET seen=1 WHERE member_id=? AND seen=0').bind(me.id).run();
+    return json({ items });
   }],
 
   // shopping
@@ -379,11 +491,13 @@ const routes = [
     await db.prepare('UPDATE shopping SET cleared=1 WHERE apartment_id=? AND bought_at IS NOT NULL').bind(A).run();
     return json({ ok: true });
   }],
-  ['POST', 'store', async ({ db, A, me, body }) => {
+  ['POST', 'store', async ({ db, A, me, body, waitUntil, origin }) => {
     await db.prepare(`DELETE FROM notices WHERE apartment_id=? AND author=? AND kind='store'`).bind(A, me.id).run();
     if (body.on) {
       await db.prepare('INSERT INTO notices (id,apartment_id,text,kind,author,created_at,expires_at) VALUES (?,?,?,?,?,?,?)')
         .bind(uid(), A, str(body.text, 100) || 'בסופר עכשיו', 'store', me.id, now(), now() + 90 * 60000).run();
+      const others = (await activeMembers(db, A)).filter((m) => m.id !== me.id);
+      waitUntil(Promise.all(others.map((m) => notifyOnce(db, m.id, 'store-' + me.id, `🛒 ${me.name} בסופר עכשיו`, 'חסר משהו? זה הזמן להוסיף לרשימת הקניות.', '/?tab=shop', origin))).catch(() => {}));
     }
     return json({ ok: true });
   }],
@@ -528,7 +642,7 @@ function match(pattern, seg) {
   return params;
 }
 
-export async function onRequest({ request, env, params }) {
+export async function onRequest({ request, env, params, waitUntil }) {
   try {
     const db = env.DB;
     if (!db) return fail('חסר חיבור למסד הנתונים (D1 binding בשם DB)', 500);
@@ -540,6 +654,13 @@ export async function onRequest({ request, env, params }) {
 
     if (method === 'POST' && seg.join('/') === 'apartments') return await createApartment(db, body);
     if (method === 'POST' && seg.join('/') === 'join') return await joinApartment(db, body);
+    const origin = url.origin;
+    const wu = (p) => { try { waitUntil(p); } catch { /* ignore */ } };
+    if (seg.join('/') === 'cron') {
+      const apts = (await db.prepare('SELECT id FROM apartments').all()).results;
+      for (const a of apts) { try { await runReminders(db, a.id, origin); } catch {} }
+      return json({ ok: true, apartments: apts.length });
+    }
     if (method === 'GET' && seg[0] === 'invite' && seg[1]) {
       const apt = await db.prepare('SELECT name FROM apartments WHERE code=?').bind(seg[1].toUpperCase()).first();
       return apt ? json({ name: apt.name }) : fail('קוד לא נמצא', 404);
@@ -552,7 +673,7 @@ export async function onRequest({ request, env, params }) {
     for (const [m, pattern, handler] of routes) {
       if (m !== method) continue;
       const p = match(pattern, seg);
-      if (p) return await handler({ db, me, A: me.apartment_id, body, params: p, url });
+      if (p) return await handler({ db, me, A: me.apartment_id, body, params: p, url, origin, waitUntil: wu });
     }
     return fail('לא נמצא', 404);
   } catch (e) {
