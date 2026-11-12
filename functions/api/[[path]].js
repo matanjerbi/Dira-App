@@ -50,6 +50,8 @@ let schemaReady = false;
 async function ensureSchema(db) {
   if (schemaReady) return;
   await db.batch(SCHEMA.map((s) => db.prepare(s)));
+  // additive migrations (ignore "duplicate column")
+  for (const m of ['ALTER TABLE members ADD COLUMN avatar TEXT']) { try { await db.prepare(m).run(); } catch {} }
   schemaReady = true;
 }
 
@@ -96,7 +98,7 @@ const fmtDay = (n) => { const d = new Date(n * 86400000); return `${d.getUTCDate
 
 // ---------- weekly duty (one person per week, passes only when marked done) ----------
 async function activeMembers(db, A) {
-  return (await db.prepare('SELECT id, name, color, position FROM members WHERE apartment_id=? AND active=1 ORDER BY position').bind(A).all()).results;
+  return (await db.prepare('SELECT id, name, color, position, avatar FROM members WHERE apartment_id=? AND active=1 ORDER BY position').bind(A).all()).results;
 }
 function nextAfter(members, curId, curPos) {
   const idx = members.findIndex((m) => m.id === curId);
@@ -281,7 +283,7 @@ async function getState({ db, me, A, waitUntil, origin }) {
     serverTime: t,
     today: day,
     apartment: apt,
-    me: { id: me.id, name: me.name, color: me.color },
+    me: { id: me.id, name: me.name, color: me.color, avatar: me.avatar || null },
     members,
     duty,
     tasks,
@@ -315,10 +317,15 @@ const routes = [
   ['GET', 'state', getState],
 
   // members
-  ['PATCH', 'me', async ({ db, me, body }) => {
+  ['PATCH', 'me', async ({ db, A, me, body }) => {
     const name = str(body.name, 30) || me.name;
     const color = /^#[0-9a-f]{6}$/i.test(body.color || '') ? body.color : me.color;
-    await db.prepare('UPDATE members SET name=?, color=? WHERE id=?').bind(name, color, me.id).run();
+    let avatar = me.avatar || null;
+    if ('avatar' in body) {
+      if (avatar) await db.prepare('DELETE FROM images WHERE id=? AND apartment_id=?').bind(avatar, A).run();
+      avatar = body.avatar ? await saveImage(db, A, body.avatar) : null;
+    }
+    await db.prepare('UPDATE members SET name=?, color=?, avatar=? WHERE id=?').bind(name, color, avatar, me.id).run();
     return json({ ok: true });
   }],
   ['DELETE', 'members/:id', async ({ db, A, params }) => {

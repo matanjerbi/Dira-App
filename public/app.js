@@ -55,7 +55,9 @@
     const clash = S.data && S.data.members.some((o) => o.id !== m.id && (o.name || '').trim()[0] === n[0]);
     return clash ? n.slice(0, 2) : n[0] || '?';
   }
-  const av = (id, cls = '') => { const m = M(id); return `<span class="av ${cls}" style="background:${esc(m.color)};${cls === 'sm' ? 'font-size:9.5px' : ''}" title="${esc(m.name)}">${esc(initials(m))}</span>`; };
+  const av = (id, cls = '') => { const m = M(id);
+    if (m.avatar) return `<img class="av ${cls}" src="${imgUrl(m.avatar)}" alt="${esc(m.name)}" title="${esc(m.name)}" style="border:2px solid ${esc(m.color)}">`;
+    return `<span class="av ${cls}" style="background:${esc(m.color)};${cls === 'sm' ? 'font-size:9.5px' : ''}" title="${esc(m.name)}">${esc(initials(m))}</span>`; };
   const who = (id, cls = 'sm') => `<span class="who">${av(id, cls)}<span>${esc(nm(id))}</span></span>`;
   const imgUrl = (id) => `/api/images/${encodeURIComponent(id)}?t=${encodeURIComponent(S.token)}`;
   function toast(msg) {
@@ -228,6 +230,24 @@
     c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
     URL.revokeObjectURL(url);
     return c.toDataURL('image/jpeg', q);
+  }
+  async function compressSquare(file, size = 320, q = 0.8) {
+    const url = URL.createObjectURL(file);
+    const img = await new Promise((ok, bad) => { const im = new Image(); im.onload = () => ok(im); im.onerror = bad; im.src = url; });
+    const side = Math.min(img.width, img.height);
+    const c = document.createElement('canvas');
+    c.width = c.height = Math.min(size, side);
+    c.getContext('2d').drawImage(img, (img.width - side) / 2, (img.height - side) / 2, side, side, 0, 0, c.width, c.height);
+    URL.revokeObjectURL(url);
+    return c.toDataURL('image/jpeg', q);
+  }
+  function pickAvatar() {
+    return new Promise((res) => {
+      const i = document.createElement('input');
+      i.type = 'file'; i.accept = 'image/*';
+      i.onchange = async () => { const f = i.files && i.files[0]; if (!f) return res(null); try { res(await compressSquare(f)); } catch { toast('לא הצלחתי לקרוא את התמונה'); res(null); } };
+      i.click();
+    });
   }
   function viewImage(id) {
     const v = document.createElement('div');
@@ -705,7 +725,14 @@
   function viewSettings() {
     const d = D();
     const loginLink = `${location.origin}/?login=${S.token}`;
-    return `<div class="card">
+    return `<div class="card" style="text-align:center">
+        <div style="display:inline-block">${av(me().id, 'xl')}</div>
+        <div class="row" style="justify-content:center;margin-top:10px;gap:6px">
+          <button class="btn sm" data-a="avatar-set">📷 ${me().avatar ? 'החלפת תמונה' : 'הוספת תמונת פרופיל'}</button>
+          ${me().avatar ? '<button class="btn sm danger" data-a="avatar-del">הסרה</button>' : ''}
+        </div>
+      </div>
+      <div class="card">
         <div class="field"><label>השם שלי</label><input class="input" id="set-name" value="${esc(me().name)}" maxlength="30"></div>
         <div class="field"><label>הצבע שלי</label><div class="color-pick">${COLORS.map((c) => `<button class="${me().color === c ? 'on' : ''}" style="background:${c}" data-a="set-color" data-v="${c}"></button>`).join('')}</div></div>
         <div class="field"><label>שם הדירה</label><input class="input" id="set-apt" value="${esc(d.apartment.name)}" maxlength="60"></div>
@@ -801,6 +828,13 @@
     'swap-reject': (ds) => act('POST', `swaps/${ds.id}/reject`),
     'push-enable': () => enablePush(),
     'push-disable': () => disablePush(),
+    'avatar-set': async () => {
+      const avatar = await pickAvatar();
+      if (!avatar) return;
+      toast('מעלה…');
+      await act('PATCH', 'me', { avatar }, 'תמונת הפרופיל עודכנה');
+    },
+    'avatar-del': () => act('PATCH', 'me', { avatar: null }, 'התמונה הוסרה'),
 
     // shopping
     'draft-kind': (ds) => { S.draft.kind = ds.v; render(); },

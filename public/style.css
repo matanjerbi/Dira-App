@@ -96,6 +96,8 @@ textarea.input { resize: vertical; min-height: 70px; }
 .av { width: 32px; height: 32px; border-radius: 50%; display: inline-grid; place-items: center; color: #fff; font-weight: 600; font-size: 14px; flex-shrink: 0; }
 .av.sm { width: 22px; height: 22px; font-size: 11px; }
 .av.lg { width: 44px; height: 44px; font-size: 18px; }
+.av.xl { width: 96px; height: 96px; font-size: 38px; }
+img.av { object-fit: cover; display: inline-block; background: var(--soft); }
 .who { display: inline-flex; align-items: center; gap: 6px; }
 
 /* chores */
