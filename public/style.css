@@ -189,3 +189,8 @@ img.av { cursor: zoom-in; object-fit: cover; display: inline-block; background: 
 @media (display-mode: standalone) {
   nav.bottom { height: calc(var(--nav-h) + max(var(--safe-b), 10px)); padding-bottom: max(var(--safe-b), 10px); }
 }
+
+.btn.wa { background: #25d366; color: #fff; text-decoration: none; }
+.btn.wa.sm { width: 36px; height: 36px; padding: 0; border-radius: 50%; }
+a.btn { text-decoration: none; color: inherit; }
+a.btn.wa { color: #fff; }

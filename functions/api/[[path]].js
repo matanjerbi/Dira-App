@@ -51,7 +51,7 @@ async function ensureSchema(db) {
   if (schemaReady) return;
   await db.batch(SCHEMA.map((s) => db.prepare(s)));
   // additive migrations (ignore "duplicate column")
-  for (const m of ['ALTER TABLE members ADD COLUMN avatar TEXT']) { try { await db.prepare(m).run(); } catch {} }
+  for (const m of ['ALTER TABLE members ADD COLUMN avatar TEXT', 'ALTER TABLE members ADD COLUMN phone TEXT']) { try { await db.prepare(m).run(); } catch {} }
   schemaReady = true;
 }
 
@@ -98,7 +98,7 @@ const fmtDay = (n) => { const d = new Date(n * 86400000); return `${d.getUTCDate
 
 // ---------- weekly duty (one person per week, passes only when marked done) ----------
 async function activeMembers(db, A) {
-  return (await db.prepare('SELECT id, name, color, position, avatar FROM members WHERE apartment_id=? AND active=1 ORDER BY position').bind(A).all()).results;
+  return (await db.prepare('SELECT id, name, color, position, avatar, phone FROM members WHERE apartment_id=? AND active=1 ORDER BY position').bind(A).all()).results;
 }
 function nextAfter(members, curId, curPos) {
   const idx = members.findIndex((m) => m.id === curId);
@@ -289,7 +289,7 @@ async function getState({ db, me, A, waitUntil, origin }) {
     serverTime: t,
     today: day,
     apartment: apt,
-    me: { id: me.id, name: me.name, color: me.color, avatar: me.avatar || null },
+    me: { id: me.id, name: me.name, color: me.color, avatar: me.avatar || null, phone: me.phone || null },
     members,
     duty,
     tasks,
@@ -331,7 +331,14 @@ const routes = [
       if (avatar) await db.prepare('DELETE FROM images WHERE id=? AND apartment_id=?').bind(avatar, A).run();
       avatar = body.avatar ? await saveImage(db, A, body.avatar) : null;
     }
-    await db.prepare('UPDATE members SET name=?, color=?, avatar=? WHERE id=?').bind(name, color, avatar, me.id).run();
+    let phone = me.phone || null;
+    if ('phone' in body) {
+      const raw = String(body.phone || '').replace(/[^\d+]/g, '');
+      if (!raw) phone = null;
+      else if (/^\+?\d{9,15}$/.test(raw)) phone = raw;
+      else throw new HttpError('מספר טלפון לא תקין');
+    }
+    await db.prepare('UPDATE members SET name=?, color=?, avatar=?, phone=? WHERE id=?').bind(name, color, avatar, phone, me.id).run();
     return json({ ok: true });
   }],
   ['DELETE', 'members/:id', async ({ db, A, params }) => {

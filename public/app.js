@@ -66,6 +66,27 @@
     clearTimeout(toast.t);
     toast.t = setTimeout(() => $toast.classList.remove('show'), 2200);
   }
+  const WA_ICON = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M12 2.5a9.5 9.5 0 0 0-8.2 14.3L2.5 21.5l4.8-1.3A9.5 9.5 0 1 0 12 2.5zm0 1.8a7.7 7.7 0 1 1-3.9 14.3l-.3-.2-2.8.8.8-2.7-.2-.3A7.7 7.7 0 0 1 12 4.3zm-3 3.6c-.2 0-.5.1-.7.3-.3.3-.9.9-.9 2.1s.9 2.4 1 2.6c.1.2 1.8 2.8 4.4 3.8 2.1.8 2.6.7 3 .6.5-.1 1.5-.6 1.7-1.2.2-.6.2-1.1.2-1.2-.1-.1-.2-.2-.5-.3l-1.7-.8c-.2-.1-.4-.1-.6.1l-.8 1c-.1.2-.3.2-.5.1-.3-.1-1.1-.4-2-1.3-.8-.7-1.3-1.5-1.4-1.8-.1-.2 0-.4.1-.5l.4-.5.3-.4v-.4l-.8-1.9c-.2-.5-.4-.4-.6-.4H9z"/></svg>';
+  function waLink(phone) {
+    if (!phone) return null;
+    let p = String(phone).replace(/\D/g, '');
+    if (p.startsWith('0')) p = '972' + p.slice(1);
+    return `https://wa.me/${p}`;
+  }
+  const waBtn = (m, label) => (m.phone ? `<a class="btn wa ${label ? '' : 'sm'}" href="${waLink(m.phone)}" target="_blank" rel="noopener" aria-label="וואטסאפ ל${esc(m.name)}">${WA_ICON}${label ? ' ' + label : ''}</a>` : '');
+  function memberSheet(id) {
+    const m = M(id);
+    const mine = id === me().id;
+    openSheet(`<div style="text-align:center">
+        <div style="display:inline-block">${av(id, 'xl')}</div>
+        <h2 style="margin:10px 0 4px">${esc(m.name)}${mine ? ' <span class="small muted">(אני)</span>' : ''}</h2>
+        ${m.phone ? `<div class="muted" dir="ltr">${esc(m.phone)}</div>` : `<div class="muted small">${mine ? 'עוד לא הוספת מספר טלפון' : 'לא הוסיף/ה מספר טלפון'}</div>`}
+      </div>
+      ${m.phone ? `<div class="row" style="margin-top:16px;gap:8px">
+        <a class="btn wa grow" href="${waLink(m.phone)}" target="_blank" rel="noopener">${WA_ICON} וואטסאפ</a>
+        <a class="btn grow" href="tel:${esc(m.phone)}">📞 חיוג</a></div>` : ''}
+      ${mine ? '<button class="btn block" style="margin-top:10px" data-a="goto-settings">עריכת הפרופיל שלי</button>' : ''}`);
+  }
   const phoneLike = (v) => /^[+\d][\d\s\-()]{6,}$/.test(v || '');
 
   // ---------- install (PWA) ----------
@@ -718,7 +739,8 @@
       </div>
       <div class="section-title">סדר הסבב</div>
       <div class="card">${d.members.map((m, idx) => `<div class="row" style="padding:8px 0">
-        <span class="muted small" style="width:16px">${idx + 1}</span>${av(m.id)}<div class="grow"><b>${esc(m.name)}</b>${m.id === me().id ? ' <span class="small muted">(אני)</span>' : ''}</div>
+        <span class="muted small" style="width:16px">${idx + 1}</span>${av(m.id)}<div class="grow" data-a="member-open" data-id="${m.id}" style="cursor:pointer"><b>${esc(m.name)}</b>${m.id === me().id ? ' <span class="small muted">(אני)</span>' : ''}</div>
+        ${m.id !== me().id ? waBtn(m) : ''}
         <button class="icon-btn" data-a="mem-move" data-id="${m.id}" data-d="-1" ${idx === 0 ? 'disabled' : ''}>▲</button>
         <button class="icon-btn" data-a="mem-move" data-id="${m.id}" data-d="1" ${idx === d.members.length - 1 ? 'disabled' : ''}>▼</button>
         ${m.id !== me().id ? `<button class="icon-btn" data-a="mem-remove" data-id="${m.id}" aria-label="הסרה">✕</button>` : ''}
@@ -738,6 +760,7 @@
       </div>
       <div class="card">
         <div class="field"><label>השם שלי</label><input class="input" id="set-name" value="${esc(me().name)}" maxlength="30"></div>
+        <div class="field"><label>מספר טלפון (לוואטסאפ של השותפים)</label><input class="input" id="set-phone" type="tel" inputmode="tel" dir="ltr" style="text-align:right" placeholder="050-1234567" value="${esc(me().phone || '')}" maxlength="20"></div>
         <div class="field"><label>הצבע שלי</label><div class="color-pick">${COLORS.map((c) => `<button class="${me().color === c ? 'on' : ''}" style="background:${c}" data-a="set-color" data-v="${c}"></button>`).join('')}</div></div>
         <div class="field"><label>שם הדירה</label><input class="input" id="set-apt" value="${esc(d.apartment.name)}" maxlength="60"></div>
         <button class="btn primary block" data-a="set-save">שמירה</button>
@@ -980,8 +1003,10 @@
     },
     'mem-remove': async (ds) => { if (!confirm(`להסיר את ${M(ds.id).name} מהדירה?`)) return; await act('DELETE', 'members/' + ds.id, null, 'הוסר/ה'); },
     'set-color': (ds, el) => { sheetCtx.color = ds.v; el.parentElement.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b === el)); S.pickColor = ds.v; },
+    'member-open': (ds) => memberSheet(ds.id),
+    'goto-settings': () => { closeSheet(); S.tab = 'more'; S.sub.more = 'settings'; render(); },
     'set-save': async () => {
-      const ok1 = await act('PATCH', 'me', { name: val('set-name'), color: S.pickColor || me().color });
+      const ok1 = await act('PATCH', 'me', { name: val('set-name'), phone: val('set-phone'), color: S.pickColor || me().color });
       const apt = val('set-apt');
       if (ok1 && apt && apt !== D().apartment.name) await act('PATCH', 'apartment', { name: apt });
       if (ok1) toast('נשמר');
