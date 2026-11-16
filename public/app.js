@@ -458,21 +458,34 @@
         <div class="chips">${D().tasks.map((t) => `<span class="tag" style="font-size:13px;padding:4px 10px">${esc(t.icon || '')} ${esc(t.name)}</span>`).join('')}</div>` : ''}
     </div>`;
   }
+  // rotation as it actually runs: current duty person first, then the next ones in order
+  function rotationOrder() {
+    const d = D().duty;
+    const ms = D().members;
+    if (!d) return ms.slice();
+    const i0 = Math.max(0, ms.findIndex((m) => m.id === d.member_id));
+    return ms.map((_, k) => ms[(i0 + k) % ms.length]);
+  }
   function queueCard() {
     const d = D().duty;
     const ms = D().members;
     if (!d || ms.length < 2) return '';
-    const i0 = ms.findIndex((m) => m.id === d.member_id);
+    const order = rotationOrder();
     const t = D().today;
     let s = d.status === 'upcoming' ? d.period_start + 7 : Math.max(t - ((t + 4) % 7) + 7, d.period_end + 1);
-    const rows = [];
-    for (let k = 1; k <= Math.min(4, ms.length); k++) {
-      const m = ms[(i0 + k) % ms.length];
-      rows.push(`<div class="row" style="padding:6px 0">${av(m.id, 'sm')}<span class="grow">${esc(nm(m.id))}</span><span class="small muted">${rng(s, s + 6)}</span></div>`);
-      s += 7;
-    }
-    return `<div class="section-title">הבאים בתור</div><div class="card">${rows.join('')}
-      <p class="small muted" style="margin:6px 0 0">התאריכים בהנחה שכולם מסיימים בזמן. התור עובר רק כשמסמנים "בוצע". את הסדר משנים ב"עוד" ואז "שותפים".</p></div>`;
+    const edit = S.rotEdit;
+    const rows = order.map((m, k) => {
+      let when;
+      if (k === 0) when = `<span class="tag ${d.status === 'late' ? 'danger' : 'accent'}">${d.status === 'upcoming' ? 'הבא/ה' : 'עכשיו'}</span>`;
+      else { when = `<span class="small muted">${rng(s, s + 6)}</span>`; s += 7; }
+      const arrows = edit && k > 0 ? `
+        <button class="icon-btn" data-a="rot-move" data-id="${m.id}" data-d="-1" ${k === 1 ? 'disabled style="opacity:.25"' : ''} aria-label="למעלה">▲</button>
+        <button class="icon-btn" data-a="rot-move" data-id="${m.id}" data-d="1" ${k === order.length - 1 ? 'disabled style="opacity:.25"' : ''} aria-label="למטה">▼</button>` : '';
+      return `<div class="row" style="padding:7px 0"><span class="muted small" style="width:14px">${k + 1}</span>${av(m.id, 'sm')}<span class="grow">${esc(nm(m.id))}</span>${edit ? arrows : when}</div>`;
+    });
+    return `<div class="section-title">סדר הסבב <button class="link" data-a="rot-edit">${edit ? 'סיום' : '✏️ עריכת הסדר'}</button></div>
+      <div class="card">${rows.join('')}
+      <p class="small muted" style="margin:6px 0 0">${edit ? 'מזיזים את הבאים בתור. התורן/ית הנוכחי/ת נשאר/ת ראשון/ה.' : 'התאריכים בהנחה שכולם מסיימים בזמן. התור עובר רק כשמסמנים "בוצע".'}</p></div>`;
   }
   function pushCard() {
     if (S.push === 'on') return '';
@@ -740,15 +753,13 @@
         <div class="code" style="margin:6px 0 10px">${esc(d.apartment.code)}</div>
         <div class="row"><button class="btn primary grow" data-a="share-invite">📤 שליחת הזמנה</button><button class="btn" data-a="copy" data-v="${esc(link)}">העתקת קישור</button></div>
       </div>
-      <div class="section-title">סדר הסבב</div>
-      <div class="card">${d.members.map((m, idx) => `<div class="row" style="padding:8px 0">
-        <span class="muted small" style="width:16px">${idx + 1}</span>${av(m.id)}<div class="grow" data-a="member-open" data-id="${m.id}" style="cursor:pointer"><b>${esc(m.name)}</b>${m.id === me().id ? ' <span class="small muted">(אני)</span>' : ''}</div>
+      <div class="section-title">שותפים</div>
+      <div class="card">${d.members.map((m) => `<div class="row" style="padding:8px 0">
+        ${av(m.id)}<div class="grow" data-a="member-open" data-id="${m.id}" style="cursor:pointer"><b>${esc(m.name)}</b>${m.id === me().id ? ' <span class="small muted">(אני)</span>' : ''}</div>
         ${m.id !== me().id ? waBtn(m) : ''}
-        <button class="icon-btn" data-a="mem-move" data-id="${m.id}" data-d="-1" ${idx === 0 ? 'disabled' : ''}>▲</button>
-        <button class="icon-btn" data-a="mem-move" data-id="${m.id}" data-d="1" ${idx === d.members.length - 1 ? 'disabled' : ''}>▼</button>
         ${m.id !== me().id ? `<button class="icon-btn" data-a="mem-remove" data-id="${m.id}" aria-label="הסרה">✕</button>` : ''}
       </div>`).join('')}</div>
-      <p class="small muted" style="margin:0 4px">שינוי הסדר או הוספה והסרה של שותף מעדכנים את הסבב העתידי.</p>`;
+      <p class="small muted" style="margin:0 4px">את סדר הסבב משנים בלשונית "ניקיונות".</p>`;
   }
   const COLORS = ['#e76f51', '#2a9d8f', '#8e7dbe', '#e9a23b', '#457b9d', '#d1495b', '#66a182', '#c77dff'];
   function viewSettings() {
@@ -997,10 +1008,11 @@
       if (navigator.share) { try { await navigator.share({ title: 'Dira', text, url }); } catch {} }
       else { try { await navigator.clipboard.writeText(`${text}\n${url}`); toast('ההזמנה הועתקה'); } catch { prompt('העתקה:', url); } }
     },
-    'mem-move': async (ds) => {
-      const ids = D().members.map((m) => m.id);
+    'rot-edit': () => { S.rotEdit = !S.rotEdit; render(); },
+    'rot-move': async (ds) => {
+      const ids = rotationOrder().map((m) => m.id);
       const i = ids.indexOf(ds.id), j = i + +ds.d;
-      if (j < 0 || j >= ids.length) return;
+      if (i < 1 || j < 1 || j >= ids.length) return;
       [ids[i], ids[j]] = [ids[j], ids[i]];
       await act('POST', 'members/order', { ids });
     },
