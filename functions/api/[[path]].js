@@ -187,6 +187,12 @@ async function runReminders(db, A, origin) {
   }
 }
 
+const cut = (t, n = 80) => (t.length > n ? t.slice(0, n - 1) + '…' : t);
+async function notifyOthers(db, A, me, title, body, url, origin) {
+  const others = (await activeMembers(db, A)).filter((m) => m.id !== me.id);
+  await Promise.all(others.map((m) => notify(db, m.id, title, body, url, origin).catch(() => {})));
+}
+
 class HttpError extends Error {
   constructor(msg, status = 400) { super(msg); this.status = status; }
 }
@@ -547,11 +553,12 @@ const routes = [
   }],
 
   // notices
-  ['POST', 'notices', async ({ db, A, me, body }) => {
+  ['POST', 'notices', async ({ db, A, me, body, waitUntil, origin }) => {
     const text = str(body.text, 1000);
     if (!text) throw new HttpError('הודעה ריקה');
     await db.prepare('INSERT INTO notices (id,apartment_id,text,kind,pinned,author,created_at) VALUES (?,?,?,?,?,?,?)')
       .bind(uid(), A, text, 'note', body.pinned ? 1 : 0, me.id, now()).run();
+    waitUntil(notifyOthers(db, A, me, `📌 ${me.name} בלוח המודעות`, cut(text, 120), '/?tab=home', origin));
     return json({ ok: true });
   }],
   ['PATCH', 'notices/:id', async ({ db, A, body, params }) => {
@@ -564,20 +571,27 @@ const routes = [
   }],
 
   // issues
-  ['POST', 'issues', async ({ db, A, me, body }) => {
+  ['POST', 'issues', async ({ db, A, me, body, waitUntil, origin }) => {
     const title = str(body.title, 100);
     if (!title) throw new HttpError('צריך כותרת');
     const imageId = await saveImage(db, A, body.image);
     await db.prepare('INSERT INTO issues (id,apartment_id,title,description,landlord,image_id,created_by,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)')
       .bind(uid(), A, title, str(body.description, 2000) || null, body.landlord ? 1 : 0, imageId, me.id, now(), now()).run();
+    waitUntil(notifyOthers(db, A, me, '🔧 תקלה חדשה בדירה', `${me.name}: ${cut(title)}`, '/?tab=issues', origin));
     return json({ ok: true });
   }],
-  ['PATCH', 'issues/:id', async ({ db, A, body, params }) => {
+  ['PATCH', 'issues/:id', async ({ db, A, me, body, params, waitUntil, origin }) => {
     const is = await own(db, 'issues', params.id, A);
     const status = ['open', 'in_progress', 'done'].includes(body.status) ? body.status : is.status;
     const landlord = 'landlord' in body ? (body.landlord ? 1 : 0) : is.landlord;
     const assignee = 'assignee' in body ? body.assignee || null : is.assignee;
     await db.prepare('UPDATE issues SET status=?, landlord=?, assignee=?, updated_at=? WHERE id=?').bind(status, landlord, assignee, now(), is.id).run();
+    if (assignee && assignee !== is.assignee && assignee !== me.id) {
+      waitUntil(notify(db, assignee, '🔧 תקלה הועברה אליך', `${me.name} סימן/ה אותך כאחראי/ת על: ${cut(is.title)}`, '/?tab=issues', origin).catch(() => {}));
+    }
+    if (status === 'done' && is.status !== 'done') {
+      waitUntil(notifyOthers(db, A, me, '✅ תקלה טופלה', `${cut(is.title)} (סומן ע״י ${me.name})`, '/?tab=issues', origin));
+    }
     return json({ ok: true });
   }],
   ['DELETE', 'issues/:id', async ({ db, A, params }) => {
@@ -604,7 +618,7 @@ const routes = [
   }],
 
   // polls
-  ['POST', 'polls', async ({ db, A, me, body }) => {
+  ['POST', 'polls', async ({ db, A, me, body, waitUntil, origin }) => {
     const q = str(body.question, 200);
     const opts = (Array.isArray(body.options) ? body.options : []).map((o) => str(o, 80)).filter(Boolean).slice(0, 8);
     if (!q || opts.length < 2) throw new HttpError('צריך שאלה ולפחות שתי אפשרויות');
@@ -613,6 +627,7 @@ const routes = [
       db.prepare('INSERT INTO polls (id,apartment_id,question,created_by,created_at) VALUES (?,?,?,?,?)').bind(pid, A, q, me.id, now()),
       ...opts.map((o, i) => db.prepare('INSERT INTO poll_options (id,poll_id,text,position) VALUES (?,?,?,?)').bind(uid(), pid, o, i)),
     ]);
+    waitUntil(notifyOthers(db, A, me, `🗳️ סקר חדש מ${me.name}`, cut(q, 120), '/?tab=more', origin));
     return json({ ok: true });
   }],
   ['POST', 'polls/:id/vote', async ({ db, A, me, body, params }) => {
@@ -623,10 +638,17 @@ const routes = [
     await db.prepare('INSERT OR REPLACE INTO poll_votes (poll_id,member_id,option_id) VALUES (?,?,?)').bind(p.id, me.id, opt.id).run();
     return json({ ok: true });
   }],
-  ['POST', 'polls/:id/close', async ({ db, A, me, params }) => {
+  ['POST', 'polls/:id/close', async ({ db, A, me, params, waitUntil, origin }) => {
     const p = await own(db, 'polls', params.id, A);
     if (p.created_by !== me.id) throw new HttpError('רק מי שפתח/ה את הסקר יכול/ה לסגור אותו', 403);
     await db.prepare('UPDATE polls SET closed=? WHERE id=?').bind(p.closed ? 0 : 1, p.id).run();
+    if (!p.closed) {
+      const res = (await db.prepare('SELECT o.text, COUNT(v.member_id) c FROM poll_options o LEFT JOIN poll_votes v ON v.option_id=o.id WHERE o.poll_id=? GROUP BY o.id ORDER BY c DESC, o.position').bind(p.id).all()).results;
+      const top = res[0];
+      const tie = res[1] && res[1].c === top.c;
+      const summary = !top || !top.c ? 'אף אחד לא הצביע' : tie ? `תיקו: ${res.filter((r) => r.c === top.c).map((r) => r.text).join(' / ')}` : `התוצאה: ${top.text} (${top.c} ${top.c === 1 ? "קול" : "קולות"})`;
+      waitUntil(notifyOthers(db, A, me, `🗳️ הסקר נסגר: ${cut(p.question, 60)}`, summary, '/?tab=more', origin));
+    }
     return json({ ok: true });
   }],
   ['PATCH', 'polls/:id', async ({ db, A, me, body, params }) => {
