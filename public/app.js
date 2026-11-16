@@ -1052,6 +1052,15 @@
   document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
   setInterval(() => { if (!document.hidden && S.token && !$sheet.innerHTML) refresh(); }, 10000);
 
+  // ---------- viewport height (the visible area, not including system bars) ----------
+  function setAppHeight() {
+    const h = (window.visualViewport && window.visualViewport.height) || window.innerHeight;
+    document.documentElement.style.setProperty('--app-h', Math.round(Math.min(h, window.innerHeight)) + 'px');
+  }
+  setAppHeight();
+  window.addEventListener('resize', setAppHeight);
+  if (window.visualViewport) window.visualViewport.addEventListener('resize', () => { if (!/INPUT|TEXTAREA/.test((document.activeElement || {}).tagName || '')) setAppHeight(); });
+
   // ---------- boot ----------
   (async function boot() {
     const q = new URLSearchParams(location.search);

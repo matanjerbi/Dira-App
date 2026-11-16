@@ -29,7 +29,7 @@
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 html, body { margin: 0; background: var(--bg); color: var(--ink); font-family: 'Rubik', system-ui, -apple-system, 'Segoe UI', Arial, sans-serif; font-size: 16px; }
 html, body { height: 100%; overflow: hidden; overscroll-behavior: none; }
-#app { height: 100vh; height: 100dvh; display: flex; flex-direction: column; }
+#app { height: 100vh; height: var(--app-h, 100vh); display: flex; flex-direction: column; }
 .scroller { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior-y: contain; -webkit-overflow-scrolling: touch; }
 button, input, select, textarea { font: inherit; color: inherit; }
 .boot { display: grid; place-items: center; height: 100%; font-size: 48px; animation: pulse 1.2s infinite; }
