@@ -194,3 +194,6 @@ img.av { cursor: zoom-in; object-fit: cover; display: inline-block; background: 
 .btn.wa.sm { width: 36px; height: 36px; padding: 0; border-radius: 50%; }
 a.btn { text-decoration: none; color: inherit; }
 a.btn.wa { color: #fff; }
+.icon-btn.refresh { font-size: 20px; opacity: .5; width: 34px; height: 34px; padding: 0; }
+.icon-btn.refresh.spin { animation: spin .7s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }

@@ -325,7 +325,7 @@
       <div class="scroller" data-tab="${S.tab}">
       <header class="top">
         <div><h1>${esc(titles[S.tab])}</h1>${S.tab === 'home' ? `<div class="sub">${esc(greeting())}, ${esc(me().name)}</div>` : ''}</div>
-        <button class="icon-btn" data-a="member-open" data-id="${me().id}" aria-label="הפרופיל שלי">${av(me().id)}</button>
+        <div class="row" style="gap:2px"><button class="icon-btn refresh" data-a="hard-refresh" aria-label="ריענון">↻</button><button class="icon-btn" data-a="member-open" data-id="${me().id}" aria-label="הפרופיל שלי">${av(me().id)}</button></div>
       </header>
       <main>${body}</main>
       </div>
@@ -1007,6 +1007,11 @@
     'mem-remove': async (ds) => { if (!confirm(`להסיר את ${M(ds.id).name} מהדירה?`)) return; await act('DELETE', 'members/' + ds.id, null, 'הוסר/ה'); },
     'set-color': (ds, el) => { sheetCtx.color = ds.v; el.parentElement.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b === el)); S.pickColor = ds.v; },
     'member-open': (ds) => memberSheet(ds.id),
+    'hard-refresh': async (ds, el) => {
+      el.classList.add('spin');
+      try { const r = await navigator.serviceWorker?.getRegistration(); if (r) await r.update(); } catch {}
+      location.reload();
+    },
     'phone-save': async () => {
       const phone = val('my-phone');
       if (await act('PATCH', 'me', { phone }, phone ? 'המספר נשמר' : 'המספר הוסר')) memberSheet(me().id);
