@@ -1006,7 +1006,10 @@
     },
     'mem-remove': async (ds) => { if (!confirm(`להסיר את ${M(ds.id).name} מהדירה?`)) return; await act('DELETE', 'members/' + ds.id, null, 'הוסר/ה'); },
     'set-color': (ds, el) => { sheetCtx.color = ds.v; el.parentElement.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b === el)); S.pickColor = ds.v; },
-    'member-open': (ds) => memberSheet(ds.id),
+    'member-open': (ds) => {
+      if (ds.id === me().id) { closeSheet(); S.tab = 'more'; S.sub.more = 'settings'; render(); return; }
+      memberSheet(ds.id);
+    },
     'hard-refresh': async (ds, el) => {
       el.classList.add('spin');
       try { const r = await navigator.serviceWorker?.getRegistration(); if (r) await r.update(); } catch {}
