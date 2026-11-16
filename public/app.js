@@ -231,7 +231,7 @@
     URL.revokeObjectURL(url);
     return c.toDataURL('image/jpeg', q);
   }
-  async function compressSquare(file, size = 320, q = 0.8) {
+  async function compressSquare(file, size = 720, q = 0.82) {
     const url = URL.createObjectURL(file);
     const img = await new Promise((ok, bad) => { const im = new Image(); im.onload = () => ok(im); im.onerror = bad; im.src = url; });
     const side = Math.min(img.width, img.height);
