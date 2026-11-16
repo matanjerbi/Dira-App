@@ -85,7 +85,10 @@
       ${m.phone ? `<div class="row" style="margin-top:16px;gap:8px">
         <a class="btn wa grow" href="${waLink(m.phone)}" target="_blank" rel="noopener">${WA_ICON} וואטסאפ</a>
         <a class="btn grow" href="tel:${esc(m.phone)}">📞 חיוג</a></div>` : ''}
-      ${mine ? '<button class="btn block" style="margin-top:10px" data-a="goto-settings">עריכת הפרופיל שלי</button>' : ''}`);
+      ${mine ? `<div class="field" style="margin-top:16px"><label>המספר שלי לוואטסאפ</label>
+        <div class="row" style="gap:8px"><input class="input grow" id="my-phone" type="tel" inputmode="tel" dir="ltr" style="text-align:right" placeholder="050-1234567" value="${esc(m.phone || '')}" maxlength="20">
+        <button class="btn primary" data-a="phone-save">שמירה</button></div></div>
+        <button class="btn block" data-a="goto-settings">עוד הגדרות פרופיל</button>` : ''}`);
   }
   const phoneLike = (v) => /^[+\d][\d\s\-()]{6,}$/.test(v || '');
 
@@ -322,7 +325,7 @@
       <div class="scroller" data-tab="${S.tab}">
       <header class="top">
         <div><h1>${esc(titles[S.tab])}</h1>${S.tab === 'home' ? `<div class="sub">${esc(greeting())}, ${esc(me().name)}</div>` : ''}</div>
-        <button class="icon-btn" data-a="tab" data-tab="more" data-sub="settings" aria-label="הגדרות">${av(me().id)}</button>
+        <button class="icon-btn" data-a="member-open" data-id="${me().id}" aria-label="הפרופיל שלי">${av(me().id)}</button>
       </header>
       <main>${body}</main>
       </div>
@@ -760,7 +763,7 @@
       </div>
       <div class="card">
         <div class="field"><label>השם שלי</label><input class="input" id="set-name" value="${esc(me().name)}" maxlength="30"></div>
-        <div class="field"><label>מספר טלפון (לוואטסאפ של השותפים)</label><input class="input" id="set-phone" type="tel" inputmode="tel" dir="ltr" style="text-align:right" placeholder="050-1234567" value="${esc(me().phone || '')}" maxlength="20"></div>
+        <div class="field"><label>📱 מספר טלפון לוואטסאפ</label><input class="input" id="set-phone" type="tel" inputmode="tel" dir="ltr" style="text-align:right" placeholder="050-1234567" value="${esc(me().phone || '')}" maxlength="20"></div>
         <div class="field"><label>הצבע שלי</label><div class="color-pick">${COLORS.map((c) => `<button class="${me().color === c ? 'on' : ''}" style="background:${c}" data-a="set-color" data-v="${c}"></button>`).join('')}</div></div>
         <div class="field"><label>שם הדירה</label><input class="input" id="set-apt" value="${esc(d.apartment.name)}" maxlength="60"></div>
         <button class="btn primary block" data-a="set-save">שמירה</button>
@@ -1004,6 +1007,10 @@
     'mem-remove': async (ds) => { if (!confirm(`להסיר את ${M(ds.id).name} מהדירה?`)) return; await act('DELETE', 'members/' + ds.id, null, 'הוסר/ה'); },
     'set-color': (ds, el) => { sheetCtx.color = ds.v; el.parentElement.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b === el)); S.pickColor = ds.v; },
     'member-open': (ds) => memberSheet(ds.id),
+    'phone-save': async () => {
+      const phone = val('my-phone');
+      if (await act('PATCH', 'me', { phone }, phone ? 'המספר נשמר' : 'המספר הוסר')) memberSheet(me().id);
+    },
     'goto-settings': () => { closeSheet(); S.tab = 'more'; S.sub.more = 'settings'; render(); },
     'set-save': async () => {
       const ok1 = await act('PATCH', 'me', { name: val('set-name'), phone: val('set-phone'), color: S.pickColor || me().color });

@@ -20,5 +20,10 @@ jobs:
       - run: npm ci
       - name: Create Pages project (first run only)
         run: npx wrangler pages project create dira --production-branch main || true
+      - name: Cache-bust assets
+        run: |
+          V=${GITHUB_SHA::8}
+          sed -i "s#/app.js\"#/app.js?v=$V\"#; s#/style.css\"#/style.css?v=$V\"#" public/index.html
+          sed -i "s#const CACHE = 'dira-v[0-9]*'#const CACHE = 'dira-$V'#" public/sw.js
       - name: Deploy
         run: npx wrangler pages deploy public --project-name dira --branch main --commit-dirty=true
