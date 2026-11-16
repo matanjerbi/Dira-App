@@ -295,17 +295,20 @@
     if (S.tab === 'shop') body = viewShop();
     if (S.tab === 'issues') body = viewIssues(openIssues);
     if (S.tab === 'more') body = viewMore();
-    const scroll = window.scrollY;
+    const prev = $app.querySelector('.scroller');
+    const scroll = prev && prev.dataset.tab === S.tab ? prev.scrollTop : 0;
     $app.innerHTML = `
+      <div class="scroller" data-tab="${S.tab}">
       <header class="top">
         <div><h1>${esc(titles[S.tab])}</h1>${S.tab === 'home' ? `<div class="sub">${esc(greeting())}, ${esc(me().name)}</div>` : ''}</div>
         <button class="icon-btn" data-a="tab" data-tab="more" data-sub="settings" aria-label="הגדרות">${av(me().id)}</button>
       </header>
       <main>${body}</main>
+      </div>
       <nav class="bottom">${tabs.map(([k, ic, l, b]) => `<button class="${S.tab === k ? 'on' : ''}" data-a="tab" data-tab="${k}"><span class="ic">${ic}</span>${l}${b ? `<span class="badge">${b}</span>` : ''}</button>`).join('')}</nav>
       ${S.tab === 'issues' ? `<button class="fab" data-a="issue-new" aria-label="תקלה חדשה">+</button>` : ''}
     `;
-    window.scrollTo(0, scroll);
+    $app.querySelector('.scroller').scrollTop = scroll;
   }
   function greeting() {
     const h = new Date().getHours();
@@ -320,7 +323,7 @@
   function renderOnboarding() {
     const o = S.onb;
     $app.innerHTML = `
-      <div class="onb">
+      <div class="scroller"><div class="onb">
         <div class="logo">🏠</div>
         <h1>Dira</h1>
         <p class="lead">תורנויות, קניות ותקלות. כל הדירה במקום אחד.</p>
@@ -339,7 +342,7 @@
           <button class="btn primary block" data-a="onb-go">${o.mode === 'create' ? 'יצירת הדירה' : 'הצטרפות'}</button>
         </div>
         ${isStandalone() ? '' : `<button class="btn block" style="margin-top:4px" data-a="install">📲 שמירה כאפליקציה במכשיר</button>`}
-      </div>`;
+      </div></div>`;
   }
 
   // ---------- home ----------
@@ -754,7 +757,7 @@
   // ---------- actions ----------
   const A = {
     reload: () => location.reload(),
-    tab: (ds) => { S.tab = ds.tab; if (ds.sub) S.sub[ds.tab] = ds.sub; render(); window.scrollTo(0, 0); },
+    tab: (ds) => { S.tab = ds.tab; if (ds.sub) S.sub[ds.tab] = ds.sub; render(); },
     sub: (ds) => { S.sub[ds.k] = ds.v; render(); },
     'sheet-bg': (ds, el, ev) => { if (ev.target === el) closeSheet(); },
     copy: async (ds) => { try { await navigator.clipboard.writeText(ds.v); toast('הועתק'); } catch { prompt('העתקה:', ds.v); } },
