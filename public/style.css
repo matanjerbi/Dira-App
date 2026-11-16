@@ -97,7 +97,7 @@ textarea.input { resize: vertical; min-height: 70px; }
 .av.sm { width: 22px; height: 22px; font-size: 11px; }
 .av.lg { width: 44px; height: 44px; font-size: 18px; }
 .av.xl { width: 96px; height: 96px; font-size: 38px; }
-img.av { object-fit: cover; display: inline-block; background: var(--soft); }
+img.av { cursor: zoom-in; object-fit: cover; display: inline-block; background: var(--soft); }
 .who { display: inline-flex; align-items: center; gap: 6px; }
 
 /* chores */
@@ -169,7 +169,7 @@ img.av { object-fit: cover; display: inline-block; background: var(--soft); }
 .color-pick button.on { border-color: var(--ink); }
 .photo-prev { width: 100%; max-height: 200px; object-fit: cover; border-radius: 12px; margin-top: 8px; }
 .viewer { position: fixed; inset: 0; background: rgba(0,0,0,.9); z-index: 30; display: grid; place-items: center; }
-.viewer img { max-width: 96vw; max-height: 90dvh; border-radius: 8px; }
+.viewer img { max-width: 96vw; max-height: 90dvh; border-radius: 8px; animation: fade .15s; }
 
 /* onboarding */
 .onb { max-width: 440px; margin: 0 auto; padding: calc(env(safe-area-inset-top,0px) + 40px) 18px 40px; }

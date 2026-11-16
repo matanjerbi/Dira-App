@@ -56,7 +56,7 @@
     return clash ? n.slice(0, 2) : n[0] || '?';
   }
   const av = (id, cls = '') => { const m = M(id);
-    if (m.avatar) return `<img class="av ${cls}" src="${imgUrl(m.avatar)}" alt="${esc(m.name)}" title="${esc(m.name)}" style="border:2px solid ${esc(m.color)}">`;
+    if (m.avatar) return `<img class="av ${cls}" data-img="${esc(m.avatar)}" src="${imgUrl(m.avatar)}" alt="${esc(m.name)}" title="${esc(m.name)}" style="border:2px solid ${esc(m.color)}">`;
     return `<span class="av ${cls}" style="background:${esc(m.color)};${cls === 'sm' ? 'font-size:9.5px' : ''}" title="${esc(m.name)}">${esc(initials(m))}</span>`; };
   const who = (id, cls = 'sm') => `<span class="who">${av(id, cls)}<span>${esc(nm(id))}</span></span>`;
   const imgUrl = (id) => `/api/images/${encodeURIComponent(id)}?t=${encodeURIComponent(S.token)}`;
@@ -1012,6 +1012,8 @@
 
   // ---------- events ----------
   document.addEventListener('click', (ev) => {
+    const pic = ev.target.closest('img.av[data-img]');
+    if (pic && !pic.closest('button, header')) { ev.stopPropagation(); viewImage(pic.dataset.img); return; }
     const el = ev.target.closest('[data-a]');
     if (!el || el.disabled) return;
     const fn = A[el.dataset.a];
