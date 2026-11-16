@@ -678,7 +678,7 @@
     const total = p.votes.length;
     const myVote = p.votes.find((v) => v.member_id === me().id);
     return `<div class="card">
-      <div class="row between"><b class="grow">${esc(p.question)}</b>${p.closed ? '<span class="tag">סגור</span>' : ''}<button class="icon-btn" data-a="poll-menu" data-id="${p.id}">⋯</button></div>
+      <div class="row between"><b class="grow">${esc(p.question)}</b>${p.closed ? '<span class="tag">סגור</span>' : ''}${p.created_by === me().id ? `<button class="icon-btn" data-a="poll-menu" data-id="${p.id}" aria-label="אפשרויות">⋯</button>` : ''}</div>
       <div class="small muted">${esc(M(p.created_by).name)} · ${rel(p.created_at)} · ${total}/${D().members.length} הצביעו</div>
       ${p.options.map((o) => {
         const vs = p.votes.filter((v) => v.option_id === o.id);
@@ -916,15 +916,8 @@
     'issue-del': async (ds) => { if (!confirm('למחוק את התקלה?')) return; closeSheet(); await act('DELETE', 'issues/' + ds.id, null, 'נמחק'); },
 
     // polls
-    'poll-new': () => {
-      openSheet(`<h2>סקר חדש</h2>
-        <div class="field"><label>שאלה</label><input class="input" id="p-q" placeholder="למשל: מזמינים מנקה פעם בחודש?" maxlength="200" autofocus></div>
-        <div class="field"><label>אפשרויות</label><div id="p-opts">
-          <input class="input" style="margin-bottom:6px" placeholder="אפשרות 1" value="כן" maxlength="80">
-          <input class="input" style="margin-bottom:6px" placeholder="אפשרות 2" value="לא" maxlength="80">
-        </div><button class="btn sm" data-a="poll-add-opt">+ אפשרות</button></div>
-        <button class="btn primary block" data-a="poll-save">פרסום</button>`);
-    },
+    'poll-new': () => pollSheet(null),
+    'poll-edit': (ds) => pollSheet(D().polls.find((x) => x.id === ds.id)),
     'poll-add-opt': () => {
       const box = document.getElementById('p-opts');
       if (box.children.length >= 8) return;
@@ -932,22 +925,24 @@
       i.className = 'input'; i.style.marginBottom = '6px'; i.maxLength = 80; i.placeholder = `אפשרות ${box.children.length + 1}`;
       box.appendChild(i); i.focus();
     },
-    'poll-save': async () => {
+    'poll-save': async (ds) => {
       const question = val('p-q');
-      const options = [...document.querySelectorAll('#p-opts input')].map((i) => i.value.trim()).filter(Boolean);
+      const options = [...document.querySelectorAll('#p-opts input')].map((i) => ({ id: i.dataset.oid || null, text: i.value.trim() })).filter((o) => o.text);
       if (!question || options.length < 2) return toast('צריך שאלה ושתי אפשרויות');
       closeSheet();
-      await act('POST', 'polls', { question, options }, 'הסקר פורסם');
+      if (ds.id) await act('PATCH', 'polls/' + ds.id, { question, options }, 'הסקר עודכן');
+      else await act('POST', 'polls', { question, options: options.map((o) => o.text) }, 'הסקר פורסם');
     },
     'poll-vote': (ds) => act('POST', `polls/${ds.id}/vote`, { option_id: ds.o }),
     'poll-menu': (ds) => {
       const p = D().polls.find((x) => x.id === ds.id);
       openSheet(`<h2>${esc(p.question)}</h2>
-        ${!p.closed ? `<button class="btn block" data-a="poll-close" data-id="${p.id}">סגירת הסקר</button>` : ''}
+        <button class="btn block" data-a="poll-edit" data-id="${p.id}">✏️ עריכה</button>
+        <button class="btn block" style="margin-top:8px" data-a="poll-close" data-id="${p.id}">${p.closed ? 'פתיחה מחדש' : 'סגירת הסקר'}</button>
         <button class="btn danger block" style="margin-top:8px" data-a="poll-del" data-id="${p.id}">מחיקה</button>`);
     },
     'poll-close': async (ds) => { closeSheet(); await act('POST', `polls/${ds.id}/close`); },
-    'poll-del': async (ds) => { closeSheet(); await act('DELETE', 'polls/' + ds.id, null, 'נמחק'); },
+    'poll-del': async (ds) => { if (!confirm('למחוק את הסקר?')) return; closeSheet(); await act('DELETE', 'polls/' + ds.id, null, 'נמחק'); },
 
     // info
     'info-new': () => infoSheet(null),
@@ -995,6 +990,16 @@
       logout();
     },
   };
+  function pollSheet(p) {
+    const opts = p ? p.options : [{ id: '', text: 'כן' }, { id: '', text: 'לא' }];
+    openSheet(`<h2>${p ? 'עריכת סקר' : 'סקר חדש'}</h2>
+      <div class="field"><label>שאלה</label><input class="input" id="p-q" value="${esc(p ? p.question : '')}" placeholder="למשל: מזמינים מנקה פעם בחודש?" maxlength="200" ${p ? '' : 'autofocus'}></div>
+      <div class="field"><label>אפשרויות</label><div id="p-opts">
+        ${opts.map((o, i) => `<input class="input" style="margin-bottom:6px" data-oid="${esc(o.id)}" placeholder="אפשרות ${i + 1}" value="${esc(o.text)}" maxlength="80">`).join('')}
+      </div><button class="btn sm" data-a="poll-add-opt">+ אפשרות</button></div>
+      ${p ? '<p class="small muted">כדי למחוק אפשרות, מרוקנים את השדה שלה. ההצבעות עליה יימחקו.</p>' : ''}
+      <button class="btn primary block" data-a="poll-save" data-id="${p ? p.id : ''}">${p ? 'שמירה' : 'פרסום'}</button>`);
+  }
   function infoSheet(i) {
     openSheet(`<h2>${i ? 'עריכה' : 'פרט חדש'}</h2>
       <div class="field"><label>כותרת</label><input class="input" id="f-label" value="${esc(i ? i.label : '')}" placeholder="למשל: קוד לבניין" maxlength="60"></div>

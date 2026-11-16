@@ -623,12 +623,38 @@ const routes = [
     await db.prepare('INSERT OR REPLACE INTO poll_votes (poll_id,member_id,option_id) VALUES (?,?,?)').bind(p.id, me.id, opt.id).run();
     return json({ ok: true });
   }],
-  ['POST', 'polls/:id/close', async ({ db, A, params }) => {
-    await db.prepare('UPDATE polls SET closed=1 WHERE id=? AND apartment_id=?').bind(params.id, A).run();
+  ['POST', 'polls/:id/close', async ({ db, A, me, params }) => {
+    const p = await own(db, 'polls', params.id, A);
+    if (p.created_by !== me.id) throw new HttpError('רק מי שפתח/ה את הסקר יכול/ה לסגור אותו', 403);
+    await db.prepare('UPDATE polls SET closed=? WHERE id=?').bind(p.closed ? 0 : 1, p.id).run();
     return json({ ok: true });
   }],
-  ['DELETE', 'polls/:id', async ({ db, A, params }) => {
-    await own(db, 'polls', params.id, A);
+  ['PATCH', 'polls/:id', async ({ db, A, me, body, params }) => {
+    const p = await own(db, 'polls', params.id, A);
+    if (p.created_by !== me.id) throw new HttpError('רק מי שפתח/ה את הסקר יכול/ה לערוך אותו', 403);
+    const q = str(body.question, 200);
+    const opts = (Array.isArray(body.options) ? body.options : [])
+      .map((o) => ({ id: typeof o.id === 'string' ? o.id : null, text: str(o.text, 80) })).filter((o) => o.text).slice(0, 8);
+    if (!q || opts.length < 2) throw new HttpError('צריך שאלה ולפחות שתי אפשרויות');
+    const existing = (await db.prepare('SELECT id FROM poll_options WHERE poll_id=?').bind(p.id).all()).results.map((r) => r.id);
+    const keep = new Set(opts.filter((o) => o.id && existing.includes(o.id)).map((o) => o.id));
+    const stmts = [db.prepare('UPDATE polls SET question=? WHERE id=?').bind(q, p.id)];
+    for (const id of existing) {
+      if (!keep.has(id)) {
+        stmts.push(db.prepare('DELETE FROM poll_votes WHERE option_id=?').bind(id));
+        stmts.push(db.prepare('DELETE FROM poll_options WHERE id=?').bind(id));
+      }
+    }
+    opts.forEach((o, i) => {
+      if (o.id && keep.has(o.id)) stmts.push(db.prepare('UPDATE poll_options SET text=?, position=? WHERE id=?').bind(o.text, i, o.id));
+      else stmts.push(db.prepare('INSERT INTO poll_options (id,poll_id,text,position) VALUES (?,?,?,?)').bind(uid(), p.id, o.text, i));
+    });
+    await db.batch(stmts);
+    return json({ ok: true });
+  }],
+  ['DELETE', 'polls/:id', async ({ db, A, me, params }) => {
+    const p = await own(db, 'polls', params.id, A);
+    if (p.created_by !== me.id) throw new HttpError('רק מי שפתח/ה את הסקר יכול/ה למחוק אותו', 403);
     await db.batch([
       db.prepare('DELETE FROM poll_votes WHERE poll_id=?').bind(params.id),
       db.prepare('DELETE FROM poll_options WHERE poll_id=?').bind(params.id),
