@@ -249,16 +249,41 @@ async function joinApartment(db, body) {
   return json({ token });
 }
 
+const reminderLastRun = new Map(); // per-isolate throttle so polling doesn't hammer D1 with writes
 async function getState({ db, me, A, waitUntil, origin }) {
   const t = now();
   const day = todayNum();
-  const apt = await db.prepare('SELECT id,name,code FROM apartments WHERE id=?').bind(A).first();
-  const members = await activeMembers(db, A);
-  const d = await ensureDuty(db, A, members);
-  if (waitUntil) waitUntil(runReminders(db, A, origin).catch(() => {}));
-  const tasks = (await db.prepare('SELECT id, name, icon FROM chores WHERE apartment_id=? AND active=1 ORDER BY offset_').bind(A).all()).results;
-  const logs = (await db.prepare('SELECT * FROM duty_log WHERE apartment_id=? ORDER BY done_at DESC LIMIT 200').bind(A).all()).results;
-  const dutyLog = logs.map((l) => ({ ...l, done_day: dayOfTs(l.done_at), late: Math.max(0, dayOfTs(l.done_at) - l.period_end) }));
+  // one round-trip for everything
+  const q = (sql, ...args) => db.prepare(sql).bind(...args);
+  const [rApt, rMembers, rDuty, rTasks, rLogs, shopping, names, inventory, notices, issues, info, polls, options, votes, swaps] = await db.batch([
+    q('SELECT id,name,code FROM apartments WHERE id=?', A),
+    q('SELECT id, name, color, position, avatar, phone FROM members WHERE apartment_id=? AND active=1 ORDER BY position', A),
+    q('SELECT * FROM duty WHERE apartment_id=?', A),
+    q('SELECT id, name, icon FROM chores WHERE apartment_id=? AND active=1 ORDER BY offset_', A),
+    q('SELECT * FROM duty_log WHERE apartment_id=? ORDER BY done_at DESC LIMIT 200', A),
+    q('SELECT * FROM shopping WHERE apartment_id=? AND cleared=0 ORDER BY urgent DESC, added_at DESC LIMIT 300', A),
+    q('SELECT name, COUNT(*) c FROM shopping WHERE apartment_id=? GROUP BY name ORDER BY c DESC LIMIT 150', A),
+    q('SELECT * FROM inventory WHERE apartment_id=? ORDER BY name', A),
+    q('SELECT * FROM notices WHERE apartment_id=? AND (expires_at IS NULL OR expires_at > ?) ORDER BY pinned DESC, created_at DESC LIMIT 60', A, t),
+    q(`SELECT * FROM issues WHERE apartment_id=? AND (status!='done' OR updated_at > ?) ORDER BY CASE status WHEN 'open' THEN 0 WHEN 'in_progress' THEN 1 ELSE 2 END, created_at DESC LIMIT 150`, A, t - 60 * 86400000),
+    q('SELECT * FROM info WHERE apartment_id=? ORDER BY position, label', A),
+    q('SELECT * FROM polls WHERE apartment_id=? ORDER BY closed, created_at DESC LIMIT 30', A),
+    q('SELECT o.* FROM poll_options o JOIN polls p ON p.id=o.poll_id WHERE p.apartment_id=? ORDER BY o.position', A),
+    q('SELECT v.* FROM poll_votes v JOIN polls p ON p.id=v.poll_id WHERE p.apartment_id=?', A),
+    q(`SELECT * FROM swaps WHERE apartment_id=? AND status='pending' ORDER BY created_at DESC`, A),
+  ]);
+  const apt = rApt.results[0];
+  const members = rMembers.results;
+  let d = rDuty.results[0];
+  if (members.length && (!d || !members.some((m) => m.id === d.member_id))) d = await ensureDuty(db, A, members);
+
+  const last = reminderLastRun.get(A) || 0;
+  if (waitUntil && t - last > 10 * 60000) {
+    reminderLastRun.set(A, t);
+    waitUntil(runReminders(db, A, origin).catch(() => {}));
+  }
+
+  const dutyLog = rLogs.results.map((l) => ({ ...l, done_day: dayOfTs(l.done_at), late: Math.max(0, dayOfTs(l.done_at) - l.period_end) }));
   const lastLog = dutyLog[0] || null;
   const duty = d ? {
     member_id: d.member_id,
@@ -270,20 +295,8 @@ async function getState({ db, me, A, waitUntil, origin }) {
     last: lastLog && lastLog.done_at === d.started_at && (day < d.period_start || t - lastLog.done_at < 86400000) ? lastLog : null,
     can_undo: !!(lastLog && lastLog.done_at === d.started_at && t - lastLog.done_at < 12 * 3600000),
   } : null;
-
-  const [shopping, frequent, inventory, notices, issues, info, polls, options, votes, swaps] = await Promise.all([
-    db.prepare('SELECT * FROM shopping WHERE apartment_id=? AND cleared=0 ORDER BY urgent DESC, added_at DESC LIMIT 300').bind(A).all(),
-    db.prepare('SELECT name, COUNT(*) c FROM shopping WHERE apartment_id=? GROUP BY name ORDER BY c DESC LIMIT 30').bind(A).all(),
-    db.prepare('SELECT * FROM inventory WHERE apartment_id=? ORDER BY name').bind(A).all(),
-    db.prepare('SELECT * FROM notices WHERE apartment_id=? AND (expires_at IS NULL OR expires_at > ?) ORDER BY pinned DESC, created_at DESC LIMIT 60').bind(A, t).all(),
-    db.prepare(`SELECT * FROM issues WHERE apartment_id=? AND (status!='done' OR updated_at > ?) ORDER BY CASE status WHEN 'open' THEN 0 WHEN 'in_progress' THEN 1 ELSE 2 END, created_at DESC LIMIT 150`).bind(A, t - 60 * 86400000).all(),
-    db.prepare('SELECT * FROM info WHERE apartment_id=? ORDER BY position, label').bind(A).all(),
-    db.prepare('SELECT * FROM polls WHERE apartment_id=? ORDER BY closed, created_at DESC LIMIT 30').bind(A).all(),
-    db.prepare('SELECT o.* FROM poll_options o JOIN polls p ON p.id=o.poll_id WHERE p.apartment_id=? ORDER BY o.position').bind(A).all(),
-    db.prepare('SELECT v.* FROM poll_votes v JOIN polls p ON p.id=v.poll_id WHERE p.apartment_id=?').bind(A).all(),
-    db.prepare(`SELECT * FROM swaps WHERE apartment_id=? AND status='pending' ORDER BY created_at DESC`).bind(A).all(),
-  ]);
   const openNames = new Set(shopping.results.filter((s) => !s.bought_at).map((s) => s.name));
+  const allNames = names.results.map((r) => r.name);
 
   return json({
     serverTime: t,
@@ -292,7 +305,7 @@ async function getState({ db, me, A, waitUntil, origin }) {
     me: { id: me.id, name: me.name, color: me.color, avatar: me.avatar || null, phone: me.phone || null },
     members,
     duty,
-    tasks,
+    tasks: rTasks.results,
     dutyLog: dutyLog.slice(0, 30),
     dutyStats: members.map((m) => {
       const mine = dutyLog.filter((l) => l.member_id === m.id);
@@ -300,7 +313,8 @@ async function getState({ db, me, A, waitUntil, origin }) {
     }),
     swaps: swaps.results,
     shopping: shopping.results,
-    frequent: frequent.results.map((r) => r.name).filter((n) => !openNames.has(n)).slice(0, 16),
+    frequent: allNames.filter((n) => !openNames.has(n)).slice(0, 16),
+    names: allNames,
     inventory: inventory.results,
     notices: notices.results,
     issues: issues.results,
@@ -475,8 +489,10 @@ const routes = [
 
   // shopping
   ['POST', 'shopping', async ({ db, A, me, body }) => {
-    const name = str(body.name, 80);
+    const name = str(body.name, 80).replace(/\s+/g, ' ');
     if (!name) throw new HttpError('צריך שם מוצר');
+    const dup = await db.prepare('SELECT 1 FROM shopping WHERE apartment_id=? AND bought_at IS NULL AND cleared=0 AND lower(trim(name))=lower(?)').bind(A, name).first();
+    if (dup) throw new HttpError(`"${name}" כבר ברשימה`, 409);
     await db.prepare('INSERT INTO shopping (id,apartment_id,name,qty,note,kind,urgent,added_by,added_at) VALUES (?,?,?,?,?,?,?,?,?)')
       .bind(uid(), A, name, str(body.qty, 30) || null, str(body.note, 200) || null, body.kind === 'personal' ? 'personal' : 'shared', body.urgent ? 1 : 0, me.id, now()).run();
     return json({ ok: true });

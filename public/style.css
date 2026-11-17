@@ -27,7 +27,7 @@
   }
 }
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-html, body { margin: 0; background: var(--bg); color: var(--ink); font-family: 'Rubik', system-ui, -apple-system, 'Segoe UI', Arial, sans-serif; font-size: 16px; }
+html, body { touch-action: manipulation; margin: 0; background: var(--bg); color: var(--ink); font-family: 'Rubik', system-ui, -apple-system, 'Segoe UI', Arial, sans-serif; font-size: 16px; }
 html, body { height: 100%; overflow: hidden; overscroll-behavior: none; }
 #app { height: 100vh; height: var(--app-h, 100vh); display: flex; flex-direction: column; }
 .scroller { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior-y: contain; -webkit-overflow-scrolling: touch; }
@@ -207,3 +207,13 @@ a.btn.wa { color: #fff; }
 .cam-bar .btn.primary { background: var(--accent); }
 .cam-shutter { width: 72px; height: 72px; border-radius: 50%; border: 5px solid #fff; background: rgba(255,255,255,.25); cursor: pointer; }
 .cam-shutter:active { background: #fff; }
+
+/* snappier feedback */
+.btn, .chip, .check, .icon-btn, .tri button, .stat, nav.bottom button, .opt, .seg button { transition: transform .08s ease, background-color .15s ease, opacity .15s; }
+.btn:active, .chip:active, .check:active, .icon-btn:active, .tri button:active, .stat:active, nav.bottom button:active, .opt:active, .seg button:active { transform: scale(.94); }
+.item.pending { opacity: .6; }
+.item, .inv { animation: fade .18s ease-out; }
+input.search { background: var(--soft); border-color: transparent; }
+#s-sugg:empty { display: none; }
+.item.flash { animation: flash 1.6s ease; border-radius: 10px; }
+@keyframes flash { 0%, 60% { background: var(--warn-soft); } 100% { background: transparent; } }

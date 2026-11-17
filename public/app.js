@@ -195,7 +195,22 @@
     if (!r.ok) throw new Error(j.error || 'שגיאה');
     return j;
   }
-  async function act(method, path, body, okMsg) {
+  let inflight = 0;
+  let refreshTimer = null;
+  function softRefresh() {
+    clearTimeout(refreshTimer);
+    refreshTimer = setTimeout(() => { if (!inflight) refresh(true); else softRefresh(); }, 300);
+  }
+  // mutate(data) applies the change locally first so the UI reacts instantly; the server call runs in the background
+  async function act(method, path, body, okMsg, mutate) {
+    if (mutate && S.data) {
+      try { mutate(S.data); render(); } catch (e) { /* fall back to server state */ }
+      if (okMsg) toast(okMsg);
+      inflight++;
+      try { await api(method, path, body); return true; }
+      catch (e) { toast(e.message); return false; }
+      finally { inflight--; softRefresh(); }
+    }
     try {
       await api(method, path, body);
       if (okMsg) toast(okMsg);
@@ -214,6 +229,7 @@
       if (!force && raw === S.raw) return;
       S.raw = raw;
       S.data = j;
+      try { localStorage.setItem('dira.cache', raw); } catch {}
       const ae = document.activeElement;
       if (!force && ae && $app.contains(ae) && /INPUT|TEXTAREA|SELECT/.test(ae.tagName)) { S.pendingRender = true; return; }
       render();
@@ -223,6 +239,7 @@
   }
   function logout(silent) {
     localStorage.removeItem(LS);
+    localStorage.removeItem('dira.cache');
     S.token = null; S.data = null; S.raw = '';
     syncTokenToSW();
     closeSheet();
@@ -397,6 +414,7 @@
       ${S.tab === 'issues' ? `<button class="fab" data-a="issue-new" aria-label="תקלה חדשה">+</button>` : ''}
     `;
     $app.querySelector('.scroller').scrollTop = scroll;
+    if (S.tab === 'shop') { applySearch(); updateSuggestions(); }
   }
   function greeting() {
     const h = new Date().getHours();
@@ -607,6 +625,50 @@
   }
 
   // ---------- shopping ----------
+  const norm = (x) => String(x || '').trim().replace(/\s+/g, ' ').toLowerCase();
+  const openItem = (name) => D().shopping.find((s) => !s.bought_at && norm(s.name) === norm(name));
+  // duplicates are blocked: point at the existing item instead
+  function confirmDuplicate(name) {
+    const ex = openItem(name);
+    if (!ex) return true;
+    toast(`"${ex.name}" כבר ברשימה (${M(ex.added_by).name} הוסיף/ה ${rel(ex.added_at)})`);
+    S.shopQuery = ''; S.shopFilter = 'all';
+    if (S.tab !== 'shop' || S.sub.shop !== 'list') { S.tab = 'shop'; S.sub.shop = 'list'; }
+    render();
+    const el = [...document.querySelectorAll('.item')].find((x) => x.querySelector('[data-id="' + ex.id + '"]'));
+    if (el) { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); el.classList.add('flash'); setTimeout(() => el.classList.remove('flash'), 1600); }
+    return false;
+  }
+  function tempItem(o) {
+    return { id: 'tmp' + Date.now() + Math.random().toString(36).slice(2, 6), name: o.name, qty: o.qty || null, note: o.note || null, kind: o.kind || 'shared',
+      urgent: o.urgent ? 1 : 0, added_by: me().id, added_at: Date.now(), bought_by: null, bought_at: null, cleared: 0, inventory_id: o.inventory_id || null };
+  }
+  function applySearch() {
+    const q = norm(S.shopQuery);
+    document.querySelectorAll('[data-name]').forEach((el) => { el.style.display = !q || norm(el.dataset.name).includes(q) ? '' : 'none'; });
+    const empty = document.getElementById('search-empty');
+    if (empty) {
+      const any = [...document.querySelectorAll('[data-name]')].some((el) => el.style.display !== 'none');
+      empty.hidden = !q || any;
+    }
+  }
+  function updateSuggestions() {
+    const box = document.getElementById('s-sugg');
+    if (!box) return;
+    const q = norm(S.draft.name);
+    if (!q) { box.innerHTML = ''; return; }
+    const seen = new Set();
+    const cands = [];
+    for (const n of [...D().inventory.map((i) => i.name), ...(D().names || [])]) {
+      const k = norm(n);
+      if (seen.has(k) || !k.includes(q) || k === q) continue;
+      seen.add(k);
+      cands.push(n);
+      if (cands.length >= 6) break;
+    }
+    box.innerHTML = cands.map((n) => `<button class="chip" data-a="shop-sugg" data-v="${esc(n)}">${esc(n)}${openItem(n) ? ' <span class="small muted">· כבר ברשימה ✓</span>' : ''}</button>`).join('');
+  }
+
   function viewShop() {
     const sub = S.sub.shop;
     const seg = `<div class="seg">
@@ -630,9 +692,10 @@
       <button class="btn block ${iAmAtStore ? 'primary' : ''}" style="margin-bottom:12px" data-a="store-toggle" data-on="${iAmAtStore ? 0 : 1}">${iAmAtStore ? '✓ אני בסופר. לחיצה כשסיימתי' : '🛒 אני יוצא/ת לסופר (כולם יראו)'}</button>
       <div class="card">
         <div class="addbar">
-          <input class="input" id="s-name" data-bind="name" placeholder="מה צריך לקנות?" value="${esc(dr.name)}" maxlength="80" enterkeyhint="done">
+          <input class="input" id="s-name" data-bind="name" placeholder="מה צריך לקנות?" value="${esc(dr.name)}" maxlength="80" enterkeyhint="done" autocomplete="off">
           <button class="btn primary" data-a="shop-add">הוסף</button>
         </div>
+        <div class="chips" id="s-sugg" style="margin-top:8px"></div>
         <div class="row wrap" style="gap:6px;margin-top:8px">
           <button class="chip ${dr.kind === 'shared' ? 'on' : ''}" data-a="draft-kind" data-v="shared">🏠 משותף</button>
           <button class="chip ${dr.kind === 'personal' ? 'on' : ''}" data-a="draft-kind" data-v="personal">👤 בשבילי</button>
@@ -645,15 +708,16 @@
         </div>` : ''}
         ${d.frequent.length ? `<div class="small muted" style="margin:12px 0 6px">הוספה מהירה</div><div class="chips">${d.frequent.map((n) => `<button class="chip" data-a="shop-quick" data-v="${esc(n)}">+ ${esc(n)}</button>`).join('')}</div>` : ''}
       </div>
+      ${searchBox()}
       <div class="chips" style="margin:4px 2px 10px">
         ${[['all', 'הכל'], ['shared', 'משותף'], ['personal', 'אישי'], ['mine', 'הוספתי']].map(([k, l]) => `<button class="chip ${f === k ? 'on' : ''}" data-a="shop-filter" data-v="${k}">${l}</button>`).join('')}
       </div>
-      <div class="card">${open.length ? open.map(shopItem).join('') : `<div class="empty"><span class="big">🧺</span>הרשימה ריקה</div>`}</div>
+      <div class="card">${open.length ? open.map(shopItem).join('') + '<div class="empty" id="search-empty" hidden>לא נמצא ברשימה</div>' : `<div class="empty"><span class="big">🧺</span>הרשימה ריקה</div>`}</div>
       ${bought.length ? `<div class="section-title">נקנה (${bought.length}) <button class="link" data-a="shop-clear">ניקוי</button></div><div class="card">${bought.map(shopItem).join('')}</div>` : ''}
     `;
   }
   function shopItem(s) {
-    return `<div class="item ${s.bought_at ? 'bought' : ''}">
+    return `<div class="item ${s.bought_at ? 'bought' : ''} ${String(s.id).startsWith('tmp') ? 'pending' : ''}" data-name="${esc(s.name + ' ' + (s.note || ''))}">
       <button class="check ${s.bought_at ? 'on' : ''}" data-a="shop-toggle" data-id="${s.id}" data-b="${s.bought_at ? 0 : 1}" aria-label="נקנה">${s.bought_at ? '✓' : ''}</button>
       <div class="grow" data-a="shop-edit" data-id="${s.id}" style="cursor:pointer">
         <div class="row wrap" style="gap:6px"><span class="name">${esc(s.name)}</span>${s.qty ? `<span class="tag">${esc(s.qty)}</span>` : ''}${s.urgent && !s.bought_at ? '<span class="tag danger">דחוף</span>' : ''}${s.kind === 'personal' ? `<span class="tag accent">👤 של ${esc(M(s.added_by).name)}</span>` : ''}</div>
@@ -663,6 +727,9 @@
       ${av(s.bought_at ? s.bought_by : s.added_by, 'sm')}
       <button class="icon-btn" style="margin-top:-4px" data-a="shop-del-quick" data-id="${s.id}" aria-label="מחיקה">🗑️</button>
     </div>`;
+  }
+  function searchBox() {
+    return `<input class="input search" id="shop-q" type="search" placeholder="🔍 חיפוש מוצר" value="${esc(S.shopQuery || '')}" autocomplete="off" style="margin-bottom:10px">`;
   }
   function shopSheet(s) {
     openSheet(`
@@ -687,7 +754,8 @@
     const order = { out: 0, low: 1, ok: 2 };
     const items = [...d.inventory].sort((a, b) => order[a.status] - order[b.status] || a.name.localeCompare(b.name, 'he'));
     return `<p class="small muted" style="margin:0 4px 10px">מוצרים משותפים שתמיד צריך בבית. מה שמסומן "עומד להיגמר" או "נגמר" נכנס לרשימת הקניות לבד.</p>
-      <div class="inv-grid">${items.map((i) => `<div class="inv">
+      ${searchBox()}
+      <div class="inv-grid">${items.map((i) => `<div class="inv" data-name="${esc(i.name)}">
         <div class="top-row"><span class="em">${esc(i.icon || '📦')}</span><span class="nm">${esc(i.name)}</span>
         ${S.invEdit ? `<button class="icon-btn" data-a="inv-del" data-id="${i.id}" aria-label="מחיקה">✕</button>` : ''}</div>
         <div class="tri">
@@ -859,7 +927,7 @@
   const A = {
     reload: () => location.reload(),
     tab: (ds) => { S.tab = ds.tab; if (ds.sub) S.sub[ds.tab] = ds.sub; render(); },
-    sub: (ds) => { S.sub[ds.k] = ds.v; render(); },
+    sub: (ds) => { S.sub[ds.k] = ds.v; render(); const sc = $app.querySelector('.scroller'); if (sc) sc.scrollTop = 0; },
     'sheet-bg': (ds, el, ev) => { if (ev.target === el) closeSheet(); },
     copy: async (ds) => { try { await navigator.clipboard.writeText(ds.v); toast('הועתק'); } catch { prompt('העתקה:', ds.v); } },
     'view-img': (ds) => viewImage(ds.id),
@@ -948,14 +1016,32 @@
     'shop-add': async () => {
       const dr = S.draft;
       if (!dr.name.trim()) { document.getElementById('s-name')?.focus(); return; }
-      const body = { name: dr.name, qty: dr.qty, note: dr.note, kind: dr.kind, urgent: dr.urgent };
+      if (!confirmDuplicate(dr.name)) return;
+      const body = { name: dr.name.trim(), qty: dr.qty, note: dr.note, kind: dr.kind, urgent: dr.urgent };
       dr.name = ''; dr.qty = ''; dr.note = ''; dr.urgent = false; dr.opts = false;
-      await act('POST', 'shopping', body);
+      const p = act('POST', 'shopping', body, null, (d) => { d.shopping.unshift(tempItem(body)); d.frequent = d.frequent.filter((n) => norm(n) !== norm(body.name)); });
       document.getElementById('s-name')?.focus();
+      await p;
     },
-    'shop-quick': (ds) => act('POST', 'shopping', { name: ds.v, kind: 'shared' }, `נוסף: ${ds.v}`),
+    'shop-sugg': (ds) => { S.draft.name = ds.v; A['shop-add'](); },
+    'shop-quick': (ds) => {
+      if (!confirmDuplicate(ds.v)) return;
+      return act('POST', 'shopping', { name: ds.v, kind: 'shared' }, `נוסף: ${ds.v}`, (d) => {
+        d.shopping.unshift(tempItem({ name: ds.v }));
+        d.frequent = d.frequent.filter((n) => n !== ds.v);
+      });
+    },
     'shop-filter': (ds) => { S.shopFilter = ds.v; render(); },
-    'shop-toggle': (ds) => act('PATCH', 'shopping/' + ds.id, { bought: ds.b === '1' }),
+    'shop-toggle': (ds) => {
+      if (ds.id.startsWith('tmp')) return toast('רגע, שומר…');
+      const b = ds.b === '1';
+      return act('PATCH', 'shopping/' + ds.id, { bought: b }, null, (d) => {
+        const it = d.shopping.find((x) => x.id === ds.id);
+        if (!it) return;
+        it.bought_at = b ? Date.now() : null; it.bought_by = b ? me().id : null;
+        if (b && it.inventory_id) { const inv = d.inventory.find((i) => i.id === it.inventory_id); if (inv) inv.status = 'ok'; }
+      });
+    },
     'shop-clear': () => act('POST', 'shopping/clear'),
     'shop-edit': (ds) => shopSheet(D().shopping.find((s) => s.id === ds.id)),
     'e-kind': (ds, el) => { sheetCtx.kind = ds.v; el.parentElement.querySelectorAll('[data-a="e-kind"]').forEach((b) => b.classList.toggle('on', b === el)); },
@@ -968,13 +1054,25 @@
     'shop-del-quick': async (ds) => {
       const it = D().shopping.find((s) => s.id === ds.id);
       if (!it) return;
-      await act('DELETE', 'shopping/' + ds.id, null, `נמחק: ${it.name}`);
+      if (ds.id.startsWith('tmp')) return toast('רגע, שומר…');
+      await act('DELETE', 'shopping/' + ds.id, null, `נמחק: ${it.name}`, (d) => {
+        d.shopping = d.shopping.filter((x) => x.id !== ds.id);
+        if (it.inventory_id && !it.bought_at) { const inv = d.inventory.find((i) => i.id === it.inventory_id); if (inv) inv.status = 'ok'; }
+      });
     },
     'shop-del': async (ds) => { closeSheet(); await act('DELETE', 'shopping/' + ds.id, null, 'נמחק'); },
     'store-toggle': (ds) => act('POST', 'store', { on: ds.on === '1' }, ds.on === '1' ? 'כולם רואים שאת/ה בסופר' : 'סיימת קניות'),
 
     // inventory
-    'inv-set': (ds) => act('PATCH', 'inventory/' + ds.id, { status: ds.v }, ds.v === 'ok' ? 'עודכן' : 'נוסף לרשימת הקניות'),
+    'inv-set': (ds) => act('PATCH', 'inventory/' + ds.id, { status: ds.v }, ds.v === 'ok' ? null : 'נוסף לרשימת הקניות', (d) => {
+      const inv = d.inventory.find((i) => i.id === ds.id);
+      if (!inv) return;
+      inv.status = ds.v; inv.updated_by = me().id; inv.updated_at = Date.now();
+      const open = d.shopping.find((x) => x.inventory_id === inv.id && !x.bought_at);
+      if (ds.v === 'ok') d.shopping = d.shopping.filter((x) => x !== open);
+      else if (open) open.note = ds.v === 'out' ? 'נגמר' : 'עומד להיגמר';
+      else d.shopping.unshift(tempItem({ name: inv.name, note: ds.v === 'out' ? 'נגמר' : 'עומד להיגמר', inventory_id: inv.id }));
+    }),
     'inv-edit': () => { S.invEdit = !S.invEdit; render(); },
     'inv-del': async (ds) => { if (confirm('להסיר מהמלאי?')) await act('DELETE', 'inventory/' + ds.id); },
     'inv-new': () => {
@@ -1037,7 +1135,11 @@
       if (ds.id) await act('PATCH', 'polls/' + ds.id, { question, options }, 'הסקר עודכן');
       else await act('POST', 'polls', { question, options: options.map((o) => o.text) }, 'הסקר פורסם');
     },
-    'poll-vote': (ds) => act('POST', `polls/${ds.id}/vote`, { option_id: ds.o }),
+    'poll-vote': (ds) => act('POST', `polls/${ds.id}/vote`, { option_id: ds.o }, null, (d) => {
+      const p = d.polls.find((x) => x.id === ds.id);
+      if (!p) return;
+      p.votes = p.votes.filter((v) => v.member_id !== me().id).concat({ poll_id: p.id, member_id: me().id, option_id: ds.o });
+    }),
     'poll-menu': (ds) => {
       const p = D().polls.find((x) => x.id === ds.id);
       openSheet(`<h2>${esc(p.question)}</h2>
@@ -1151,8 +1253,10 @@
     }
   });
   document.addEventListener('input', (ev) => {
+    if (ev.target.id === 'shop-q') { S.shopQuery = ev.target.value; applySearch(); return; }
     const b = ev.target.dataset && ev.target.dataset.bind;
     if (b) S.draft[b] = ev.target.value;
+    if (ev.target.id === 's-name') updateSuggestions();
   });
   document.addEventListener('keydown', (ev) => {
     if (ev.key !== 'Enter' || ev.isComposing) return;
@@ -1166,7 +1270,7 @@
     }, 200);
   });
   document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
-  setInterval(() => { if (!document.hidden && S.token && !$sheet.innerHTML) refresh(); }, 10000);
+  setInterval(() => { if (!document.hidden && S.token && !$sheet.innerHTML && !inflight) refresh(); }, 10000);
 
   // ---------- viewport height (the visible area, not including system bars) ----------
   function setAppHeight() {
@@ -1194,7 +1298,10 @@
     if (tab && ['home', 'chores', 'shop', 'issues', 'more'].includes(tab)) { S.tab = tab; history.replaceState(null, '', '/'); }
     if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
     syncTokenToSW();
-    if (S.token) await refresh(true); else render();
+    if (S.token) {
+      try { const c = localStorage.getItem('dira.cache'); if (c) { S.data = JSON.parse(c); S.raw = c; render(); } } catch {}
+      refresh(true);
+    } else render();
     checkPush().then(() => { if (S.data) render(); });
   })();
 })();
