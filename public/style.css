@@ -197,3 +197,13 @@ a.btn.wa { color: #fff; }
 .icon-btn.refresh { font-size: 20px; opacity: .5; width: 34px; height: 34px; padding: 0; }
 .icon-btn.refresh.spin { animation: spin .7s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* in-app camera */
+.cam { position: fixed; inset: 0; background: #000; z-index: 50; display: flex; flex-direction: column; }
+.cam video, .cam .cam-shot { flex: 1; min-height: 0; width: 100%; object-fit: contain; background: #000; }
+.cam-bar { display: flex; align-items: center; justify-content: space-around; padding: 18px 16px calc(18px + env(safe-area-inset-bottom, 0px)); background: #000; }
+.cam-bar[hidden] { display: none; }
+.cam-bar .btn { background: rgba(255,255,255,.15); color: #fff; min-width: 90px; }
+.cam-bar .btn.primary { background: var(--accent); }
+.cam-shutter { width: 72px; height: 72px; border-radius: 50%; border: 5px solid #fff; background: rgba(255,255,255,.25); cursor: pointer; }
+.cam-shutter:active { background: #fff; }

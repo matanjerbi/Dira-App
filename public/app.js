@@ -273,6 +273,70 @@
       i.click();
     });
   }
+  // In-app camera only (no gallery): live viewfinder via getUserMedia
+  function cameraCapture() {
+    return new Promise(async (resolve) => {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        // very old browsers: ask the OS camera directly
+        const i = document.createElement('input');
+        i.type = 'file'; i.accept = 'image/*'; i.setAttribute('capture', 'environment');
+        i.onchange = async () => { const f = i.files && i.files[0]; resolve(f ? await compress(f) : null); };
+        i.click();
+        return;
+      }
+      const ov = document.createElement('div');
+      ov.className = 'cam';
+      ov.innerHTML = `<video playsinline muted autoplay></video><img class="cam-shot" alt="" hidden>
+        <div class="cam-bar">
+          <button class="btn" data-c="cancel">ביטול</button>
+          <button class="cam-shutter" data-c="shoot" aria-label="צילום"></button>
+          <button class="btn" data-c="flip" aria-label="החלפת מצלמה">🔄</button>
+        </div>
+        <div class="cam-bar" data-bar="review" hidden>
+          <button class="btn" data-c="retake">צילום מחדש</button>
+          <button class="btn primary" data-c="use">✓ שליחה</button>
+        </div>`;
+      document.body.appendChild(ov);
+      const video = ov.querySelector('video');
+      const shotImg = ov.querySelector('.cam-shot');
+      const [shootBar, reviewBar] = ov.querySelectorAll('.cam-bar');
+      let stream = null, facing = 'environment', shot = null;
+      const stop = () => { if (stream) stream.getTracks().forEach((t) => t.stop()); stream = null; };
+      const finish = (val) => { stop(); ov.remove(); resolve(val); };
+      async function start() {
+        stop();
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: facing }, width: { ideal: 1600 }, height: { ideal: 1200 } }, audio: false });
+          video.srcObject = stream;
+          await video.play().catch(() => {});
+        } catch (e) {
+          finish(null);
+          toast(e && e.name === 'NotAllowedError' ? 'צריך לאשר גישה למצלמה בהגדרות הדפדפן' : 'לא הצלחתי לפתוח את המצלמה');
+        }
+      }
+      ov.addEventListener('click', (ev) => {
+        const c = ev.target.closest('[data-c]');
+        if (!c) return;
+        const a = c.dataset.c;
+        if (a === 'cancel') finish(null);
+        if (a === 'flip') { facing = facing === 'environment' ? 'user' : 'environment'; start(); }
+        if (a === 'shoot') {
+          const w = video.videoWidth, h = video.videoHeight;
+          if (!w) return;
+          const scale = Math.min(1, 1100 / Math.max(w, h));
+          const cv = document.createElement('canvas');
+          cv.width = Math.round(w * scale); cv.height = Math.round(h * scale);
+          cv.getContext('2d').drawImage(video, 0, 0, cv.width, cv.height);
+          shot = cv.toDataURL('image/jpeg', 0.72);
+          shotImg.src = shot; shotImg.hidden = false; video.hidden = true;
+          shootBar.hidden = true; reviewBar.hidden = false;
+        }
+        if (a === 'retake') { shot = null; shotImg.hidden = true; video.hidden = false; shootBar.hidden = false; reviewBar.hidden = true; }
+        if (a === 'use') finish(shot);
+      });
+      start();
+    });
+  }
   function viewImage(id) {
     const v = document.createElement('div');
     v.className = 'viewer';
@@ -843,7 +907,7 @@
       await act('POST', 'duty/done', {}, 'כל הכבוד! ✨ התור עבר הלאה');
     },
     'duty-done-photo': async () => {
-      const image = await pickImage();
+      const image = await cameraCapture();
       if (!image) return;
       toast('מעלה…');
       await act('POST', 'duty/done', { image }, 'כל הכבוד! ✨ התור עבר הלאה');
