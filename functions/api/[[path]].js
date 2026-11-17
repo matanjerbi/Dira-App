@@ -544,11 +544,12 @@ const routes = [
       stmts.push(db.prepare('DELETE FROM shopping WHERE inventory_id=? AND bought_at IS NULL AND cleared=0').bind(inv.id));
     } else {
       const open =await db.prepare('SELECT id FROM shopping WHERE inventory_id=? AND bought_at IS NULL AND cleared=0').bind(inv.id).first();
+      // inventory never marks items urgent — urgency is only set by hand; the note shows the stock status
       if (open) {
-        stmts.push(db.prepare('UPDATE shopping SET urgent=? WHERE id=?').bind(status === 'out' ? 1 : 0, open.id));
+        stmts.push(db.prepare('UPDATE shopping SET note=? WHERE id=?').bind(status === 'out' ? 'נגמר' : 'עומד להיגמר', open.id));
       } else {
         stmts.push(db.prepare('INSERT INTO shopping (id,apartment_id,name,note,kind,urgent,added_by,added_at,inventory_id) VALUES (?,?,?,?,?,?,?,?,?)')
-          .bind(uid(), A, inv.name, status === 'out' ? 'נגמר' : 'עומד להיגמר', 'shared', status === 'out' ? 1 : 0, me.id, now(), inv.id));
+          .bind(uid(), A, inv.name, status === 'out' ? 'נגמר' : 'עומד להיגמר', 'shared', 0, me.id, now(), inv.id));
       }
     }
     await db.batch(stmts);
