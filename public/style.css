@@ -212,7 +212,6 @@ a.btn.wa { color: #fff; }
 .btn, .chip, .check, .icon-btn, .tri button, .stat, nav.bottom button, .opt, .seg button { transition: transform .08s ease, background-color .15s ease, opacity .15s; }
 .btn:active, .chip:active, .check:active, .icon-btn:active, .tri button:active, .stat:active, nav.bottom button:active, .opt:active, .seg button:active { transform: scale(.94); }
 .item.pending { opacity: .6; }
-.item, .inv { animation: fade .18s ease-out; }
 input.search { background: var(--soft); border-color: transparent; }
 #s-sugg:empty { display: none; }
 .item.flash { animation: flash 1.6s ease; border-radius: 10px; }

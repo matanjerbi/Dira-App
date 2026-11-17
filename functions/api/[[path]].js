@@ -299,7 +299,6 @@ async function getState({ db, me, A, waitUntil, origin }) {
   const allNames = names.results.map((r) => r.name);
 
   return json({
-    serverTime: t,
     today: day,
     apartment: apt,
     me: { id: me.id, name: me.name, color: me.color, avatar: me.avatar || null, phone: me.phone || null },

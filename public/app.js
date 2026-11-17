@@ -400,20 +400,36 @@
     if (S.tab === 'shop') body = viewShop();
     if (S.tab === 'issues') body = viewIssues(openIssues);
     if (S.tab === 'more') body = viewMore();
-    const prev = $app.querySelector('.scroller');
-    const scroll = prev && prev.dataset.tab === S.tab ? prev.scrollTop : 0;
-    $app.innerHTML = `
-      <div class="scroller" data-tab="${S.tab}">
-      <header class="top">
-        <div><h1>${esc(titles[S.tab])}</h1>${S.tab === 'home' ? `<div class="sub">${esc(greeting())}, ${esc(me().name)}</div>` : ''}</div>
-        <div class="row" style="gap:2px"><button class="icon-btn refresh" data-a="hard-refresh" aria-label="ריענון">↻</button><button class="icon-btn" data-a="member-open" data-id="${me().id}" aria-label="הפרופיל שלי">${av(me().id)}</button></div>
-      </header>
-      <main>${body}</main>
-      </div>
-      <nav class="bottom">${tabs.map(([k, ic, l, b]) => `<button class="${S.tab === k ? 'on' : ''}" data-a="tab" data-tab="${k}"><span class="ic">${ic}</span>${l}${b ? `<span class="badge">${b}</span>` : ''}</button>`).join('')}</nav>
-      ${S.tab === 'issues' ? `<button class="fab" data-a="issue-new" aria-label="תקלה חדשה">+</button>` : ''}
-    `;
-    $app.querySelector('.scroller').scrollTop = scroll;
+    // Patch only the parts that changed (no full-page rewrite → no flicker, focus and scroll kept)
+    let sc = $app.querySelector('.scroller[data-shell]');
+    if (!sc) {
+      $app.innerHTML = `<div class="scroller" data-shell><header class="top"></header><main></main></div><nav class="bottom"></nav><div id="fab-slot"></div>`;
+      sc = $app.querySelector('.scroller');
+      S.parts = {};
+    }
+    const parts = {
+      header: `<div><h1>${esc(titles[S.tab])}</h1>${S.tab === 'home' ? `<div class="sub">${esc(greeting())}, ${esc(me().name)}</div>` : ''}</div>
+        <div class="row" style="gap:2px"><button class="icon-btn refresh" data-a="hard-refresh" aria-label="ריענון">↻</button><button class="icon-btn" data-a="member-open" data-id="${me().id}" aria-label="הפרופיל שלי">${av(me().id)}</button></div>`,
+      main: body,
+      nav: tabs.map(([k, ic, l, b]) => `<button class="${S.tab === k ? 'on' : ''}" data-a="tab" data-tab="${k}"><span class="ic">${ic}</span>${l}${b ? `<span class="badge">${b}</span>` : ''}</button>`).join(''),
+      fab: S.tab === 'issues' ? `<button class="fab" data-a="issue-new" aria-label="תקלה חדשה">+</button>` : '',
+    };
+    const slots = { header: sc.querySelector('header'), main: sc.querySelector('main'), nav: $app.querySelector('nav.bottom'), fab: $app.querySelector('#fab-slot') };
+    const tabChanged = sc.dataset.tab !== S.tab;
+    const scroll = tabChanged ? 0 : sc.scrollTop;
+    for (const k of Object.keys(parts)) {
+      if (S.parts[k] === parts[k]) continue;
+      const ae = document.activeElement;
+      const keep = ae && ae.id && slots[k].contains(ae) ? { id: ae.id, s: ae.selectionStart, e: ae.selectionEnd } : null;
+      slots[k].innerHTML = parts[k];
+      S.parts[k] = parts[k];
+      if (keep) {
+        const el = document.getElementById(keep.id);
+        if (el) { el.focus({ preventScroll: true }); try { el.setSelectionRange(keep.s, keep.e); } catch {} }
+      }
+    }
+    sc.dataset.tab = S.tab;
+    if (tabChanged || sc.scrollTop !== scroll) sc.scrollTop = scroll;
     if (S.tab === 'shop') { applySearch(); updateSuggestions(); }
   }
   function greeting() {
@@ -427,6 +443,7 @@
 
   // ---------- onboarding ----------
   function renderOnboarding() {
+    S.parts = {};
     const o = S.onb;
     $app.innerHTML = `
       <div class="scroller"><div class="onb">
