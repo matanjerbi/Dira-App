@@ -2,7 +2,7 @@ name: Daily reminders
 
 on:
   schedule:
-    - cron: '0 16 * * *'   # ~18:00 Israel (winter) / 19:00 (summer)
+    - cron: '7 * * * *'   # hourly; the server only sends 09:00-22:00 Israel time, each reminder at most once a day
   workflow_dispatch:
 
 jobs:

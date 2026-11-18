@@ -22,6 +22,8 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS notif_log (member_id TEXT NOT NULL, kind TEXT NOT NULL, day INTEGER NOT NULL, PRIMARY KEY (member_id, kind, day))`,
   `CREATE TABLE IF NOT EXISTS notifications (id TEXT PRIMARY KEY, member_id TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL, url TEXT, created_at INTEGER NOT NULL, seen INTEGER NOT NULL DEFAULT 0)`,
   `CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS activity (id TEXT PRIMARY KEY, apartment_id TEXT NOT NULL, member_id TEXT NOT NULL, action TEXT NOT NULL, summary TEXT NOT NULL, admin INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL)`,
+  `CREATE INDEX IF NOT EXISTS idx_activity_apt ON activity(apartment_id, created_at)`,
   `CREATE INDEX IF NOT EXISTS idx_duty_log_apt ON duty_log(apartment_id, done_at)`,
   `CREATE INDEX IF NOT EXISTS idx_members_apt ON members(apartment_id)`,
   `CREATE INDEX IF NOT EXISTS idx_shopping_apt ON shopping(apartment_id, cleared)`,
@@ -51,7 +53,7 @@ async function ensureSchema(db) {
   if (schemaReady) return;
   await db.batch(SCHEMA.map((s) => db.prepare(s)));
   // additive migrations (ignore "duplicate column")
-  for (const m of ['ALTER TABLE members ADD COLUMN avatar TEXT', 'ALTER TABLE members ADD COLUMN phone TEXT']) { try { await db.prepare(m).run(); } catch {} }
+  for (const m of ['ALTER TABLE members ADD COLUMN avatar TEXT', 'ALTER TABLE members ADD COLUMN phone TEXT', 'ALTER TABLE members ADD COLUMN role TEXT']) { try { await db.prepare(m).run(); } catch {} }
   schemaReady = true;
 }
 
@@ -166,9 +168,24 @@ async function notifyOnce(db, memberId, kind, title, body, url, origin) {
   const r = await db.prepare('INSERT OR IGNORE INTO notif_log (member_id, kind, day) VALUES (?,?,?)').bind(memberId, kind, todayNum()).run();
   if (r.meta && r.meta.changes) await notify(db, memberId, title, body, url, origin);
 }
+async function pollReminders(db, A, origin) {
+  const t = now();
+  const polls = (await db.prepare('SELECT id, question, created_by FROM polls WHERE apartment_id=? AND closed=0 AND created_at < ? AND created_at > ?')
+    .bind(A, t - 3 * 3600000, t - 7 * 86400000).all()).results;
+  if (!polls.length) return;
+  const members = await activeMembers(db, A);
+  for (const p of polls) {
+    const voted = new Set((await db.prepare('SELECT member_id FROM poll_votes WHERE poll_id=?').bind(p.id).all()).results.map((r) => r.member_id));
+    for (const m of members) {
+      if (voted.has(m.id) || m.id === p.created_by) continue;
+      await notifyOnce(db, m.id, 'poll-' + p.id, '🗳️ סקר מחכה לתשובה שלך', cut(p.question, 120), '/?tab=more', origin);
+    }
+  }
+}
 async function runReminders(db, A, origin) {
   const h = israelHour();
   if (h < 9 || h >= 22) return;
+  await pollReminders(db, A, origin).catch(() => {});
   const d = await ensureDuty(db, A);
   if (!d) return;
   const t = todayNum();
@@ -222,7 +239,7 @@ async function createApartment(db, body) {
   const sd = startDayFor(7);
   const stmts = [
     db.prepare('INSERT INTO apartments (id,name,code,created_at) VALUES (?,?,?,?)').bind(A, aptName, code, t),
-    db.prepare('INSERT INTO members (id,apartment_id,name,color,token,position,created_at) VALUES (?,?,?,?,?,?,?)').bind(memberId, A, memberName, COLORS[0], token, 0, t),
+    db.prepare(`INSERT INTO members (id,apartment_id,name,color,token,position,created_at,role) VALUES (?,?,?,?,?,?,?,'admin')`).bind(memberId, A, memberName, COLORS[0], token, 0, t),
     ...DEFAULT_CHORES.map(([n, i, w, f], idx) =>
       db.prepare('INSERT INTO chores (id,apartment_id,name,icon,weight,freq_days,start_day,offset_,created_at) VALUES (?,?,?,?,?,?,?,?,?)').bind(uid(), A, n, i, w, f, sd, idx, t)),
     ...DEFAULT_INVENTORY.map(([n, i]) =>
@@ -301,7 +318,7 @@ async function getState({ db, me, A, waitUntil, origin }) {
   return json({
     today: day,
     apartment: apt,
-    me: { id: me.id, name: me.name, color: me.color, avatar: me.avatar || null, phone: me.phone || null },
+    me: { id: me.id, name: me.name, color: me.color, avatar: me.avatar || null, phone: me.phone || null, role: me.role || null },
     members,
     duty,
     tasks: rTasks.results,
@@ -389,11 +406,11 @@ const routes = [
   }],
 
   // weekly duty
-  ['POST', 'duty/done', async ({ db, A, me, body, waitUntil, origin }) => {
+  ['POST', 'duty/done', async ({ db, A, me, body, waitUntil, origin, admin }) => {
     const members = await activeMembers(db, A);
     const d = await ensureDuty(db, A, members);
     if (!d) throw new HttpError('אין שותפים');
-    if (d.member_id !== me.id) throw new HttpError('רק התורן/ית יכול/ה לסמן שהתורנות בוצעה', 403);
+    if (d.member_id !== me.id && !admin) throw new HttpError('רק התורן/ית יכול/ה לסמן שהתורנות בוצעה', 403);
     const imageId = await saveImage(db, A, body.image);
     const ts = now();
     const t = todayNum();
@@ -434,7 +451,7 @@ const routes = [
   ['POST', 'swaps', async ({ db, A, me, body, waitUntil, origin }) => {
     const d = await ensureDuty(db, A);
     const to = await own(db, 'members', body.to_member, A);
-    if (!d || d.member_id !== me.id) throw new HttpError('רק התורן/ית יכול/ה לבקש החלפה');
+    if (!d || (d.member_id !== me.id && !admin)) throw new HttpError('רק התורן/ית יכול/ה לבקש החלפה');
     if (to.id === me.id) throw new HttpError('אי אפשר להחליף עם עצמך');
     const dup = await db.prepare(`SELECT 1 FROM swaps WHERE apartment_id=? AND status='pending'`).bind(A).first();
     if (dup) throw new HttpError('כבר יש בקשת החלפה פתוחה');
@@ -462,6 +479,17 @@ const routes = [
     if (sw.to_member !== me.id && sw.from_member !== me.id) throw new HttpError('אין הרשאה', 403);
     await db.prepare(`UPDATE swaps SET status=? WHERE id=?`).bind(sw.from_member === me.id ? 'cancelled' : 'rejected', sw.id).run();
     return json({ ok: true });
+  }],
+
+  // admin: activity log
+  ['GET', 'activity', async ({ db, A, me, url }) => {
+    if (me.role !== 'admin') throw new HttpError('אין הרשאה', 403);
+    const who = url.searchParams.get('member');
+    const before = parseInt(url.searchParams.get('before')) || now() + 1;
+    const rows = who
+      ? (await db.prepare('SELECT * FROM activity WHERE apartment_id=? AND member_id=? AND created_at < ? ORDER BY created_at DESC LIMIT 150').bind(A, who, before).all()).results
+      : (await db.prepare('SELECT * FROM activity WHERE apartment_id=? AND created_at < ? ORDER BY created_at DESC LIMIT 150').bind(A, before).all()).results;
+    return json({ items: rows });
   }],
 
   // push notifications
@@ -661,9 +689,9 @@ const routes = [
     await db.prepare('INSERT OR REPLACE INTO poll_votes (poll_id,member_id,option_id) VALUES (?,?,?)').bind(p.id, me.id, opt.id).run();
     return json({ ok: true });
   }],
-  ['POST', 'polls/:id/close', async ({ db, A, me, params, waitUntil, origin }) => {
+  ['POST', 'polls/:id/close', async ({ db, A, me, params, waitUntil, origin, admin }) => {
     const p = await own(db, 'polls', params.id, A);
-    if (p.created_by !== me.id) throw new HttpError('רק מי שפתח/ה את הסקר יכול/ה לסגור אותו', 403);
+    if (p.created_by !== me.id && !admin) throw new HttpError('רק מי שפתח/ה את הסקר יכול/ה לסגור אותו', 403);
     await db.prepare('UPDATE polls SET closed=? WHERE id=?').bind(p.closed ? 0 : 1, p.id).run();
     if (!p.closed) {
       const res = (await db.prepare('SELECT o.text, COUNT(v.member_id) c FROM poll_options o LEFT JOIN poll_votes v ON v.option_id=o.id WHERE o.poll_id=? GROUP BY o.id ORDER BY c DESC, o.position').bind(p.id).all()).results;
@@ -674,9 +702,9 @@ const routes = [
     }
     return json({ ok: true });
   }],
-  ['PATCH', 'polls/:id', async ({ db, A, me, body, params }) => {
+  ['PATCH', 'polls/:id', async ({ db, A, me, body, params, admin }) => {
     const p = await own(db, 'polls', params.id, A);
-    if (p.created_by !== me.id) throw new HttpError('רק מי שפתח/ה את הסקר יכול/ה לערוך אותו', 403);
+    if (p.created_by !== me.id && !admin) throw new HttpError('רק מי שפתח/ה את הסקר יכול/ה לערוך אותו', 403);
     const q = str(body.question, 200);
     const opts = (Array.isArray(body.options) ? body.options : [])
       .map((o) => ({ id: typeof o.id === 'string' ? o.id : null, text: str(o.text, 80) })).filter((o) => o.text).slice(0, 8);
@@ -697,9 +725,9 @@ const routes = [
     await db.batch(stmts);
     return json({ ok: true });
   }],
-  ['DELETE', 'polls/:id', async ({ db, A, me, params }) => {
+  ['DELETE', 'polls/:id', async ({ db, A, me, params, admin }) => {
     const p = await own(db, 'polls', params.id, A);
-    if (p.created_by !== me.id) throw new HttpError('רק מי שפתח/ה את הסקר יכול/ה למחוק אותו', 403);
+    if (p.created_by !== me.id && !admin) throw new HttpError('רק מי שפתח/ה את הסקר יכול/ה למחוק אותו', 403);
     await db.batch([
       db.prepare('DELETE FROM poll_votes WHERE poll_id=?').bind(params.id),
       db.prepare('DELETE FROM poll_options WHERE poll_id=?').bind(params.id),
@@ -716,6 +744,58 @@ const routes = [
     return new Response(bin, { headers: { 'content-type': img.mime, 'cache-control': 'private, max-age=31536000, immutable' } });
   }],
 ];
+
+// ---------- activity log ----------
+const SUBJECT = { shopping: ['shopping', 'name'], inventory: ['inventory', 'name'], notices: ['notices', 'text'], issues: ['issues', 'title'],
+  info: ['info', 'label'], polls: ['polls', 'question'], chores: ['chores', 'name'], members: ['members', 'name'] };
+const STATUS_HE = { ok: 'יש', low: 'עומד להיגמר', out: 'נגמר', open: 'פתוחה', in_progress: 'בטיפול', done: 'טופלה' };
+function describe(key, body, subj, extra) {
+  const n = (x) => `"${cut(String(x || ''), 60)}"`;
+  switch (key) {
+    case 'POST shopping': return `הוסיף/ה לרשימת הקניות: ${n(body.name)}`;
+    case 'PATCH shopping/:id':
+      if (body.bought === true) return `סימן/ה כנקנה: ${n(subj)}`;
+      if (body.bought === false) return `ביטל/ה "נקנה": ${n(subj)}`;
+      return `ערך/ה מוצר ברשימה: ${n(subj)}`;
+    case 'DELETE shopping/:id': return `מחק/ה מרשימת הקניות: ${n(subj)}`;
+    case 'POST shopping/clear': return 'ניקה/תה את רשימת המוצרים שנקנו';
+    case 'POST store': return body.on ? 'יצא/ה לסופר' : 'סיים/ה קניות';
+    case 'POST inventory': return `הוסיף/ה למלאי: ${n(body.name)}`;
+    case 'PATCH inventory/:id': return `סימן/ה במלאי "${STATUS_HE[body.status] || body.status}": ${n(subj)}`;
+    case 'DELETE inventory/:id': return `הסיר/ה מהמלאי: ${n(subj)}`;
+    case 'POST notices': return `פרסם/ה מודעה: ${n(body.text)}`;
+    case 'PATCH notices/:id': return `${body.pinned ? 'נעץ/ה' : 'ביטל/ה נעיצה של'} מודעה: ${n(subj)}`;
+    case 'DELETE notices/:id': return `מחק/ה מודעה: ${n(subj)}`;
+    case 'POST issues': return `פתח/ה תקלה: ${n(body.title)}`;
+    case 'PATCH issues/:id':
+      if (body.status) return `עדכן/ה תקלה ${n(subj)} ל"${STATUS_HE[body.status] || body.status}"`;
+      if ('assignee' in body) return `שינה/תה אחראי/ת לתקלה ${n(subj)}${extra ? ` (${extra})` : ''}`;
+      return `עדכן/ה תקלה: ${n(subj)}`;
+    case 'DELETE issues/:id': return `מחק/ה תקלה: ${n(subj)}`;
+    case 'POST info': return `הוסיף/ה פרט לדירה: ${n(body.label)}`;
+    case 'PATCH info/:id': return `ערך/ה פרט בדירה: ${n(subj)}`;
+    case 'DELETE info/:id': return `מחק/ה פרט מהדירה: ${n(subj)}`;
+    case 'POST polls': return `פתח/ה סקר: ${n(body.question)}`;
+    case 'PATCH polls/:id': return `ערך/ה סקר: ${n(subj)}`;
+    case 'POST polls/:id/vote': return `הצביע/ה בסקר: ${n(subj)}${extra ? ` (${extra})` : ''}`;
+    case 'POST polls/:id/close': return `סגר/ה או פתח/ה מחדש סקר: ${n(subj)}`;
+    case 'DELETE polls/:id': return `מחק/ה סקר: ${n(subj)}`;
+    case 'POST duty/done': return `סימן/ה שהתורנות בוצעה${extra ? ` (התורנות של ${extra})` : ''}`;
+    case 'POST duty/undo': return 'ביטל/ה סימון "בוצע" של תורנות';
+    case 'PATCH duty': return `שינה/תה את התורן/ית ל${extra || ''}`;
+    case 'POST swaps': return `ביקש/ה להחליף תורנות עם ${extra || ''}`;
+    case 'POST swaps/:id/accept': return 'אישר/ה החלפת תורנות';
+    case 'POST swaps/:id/reject': return 'דחה/תה או ביטל/ה בקשת החלפה';
+    case 'POST chores': return `הוסיף/ה משימה לתורנות: ${n(body.name)}`;
+    case 'PATCH chores/:id': return `ערך/ה משימת תורנות: ${n(subj)}`;
+    case 'DELETE chores/:id': return `מחק/ה משימת תורנות: ${n(subj)}`;
+    case 'PATCH me': return 'עדכן/ה את הפרופיל';
+    case 'DELETE members/:id': return `הסיר/ה מהדירה את ${subj || ''}`;
+    case 'POST members/order': return 'שינה/תה את סדר הסבב';
+    case 'PATCH apartment': return `שינה/תה את שם הדירה ל${n(body.name)}`;
+    default: return null;
+  }
+}
 
 function match(pattern, seg) {
   const ps = pattern.split('/');
@@ -755,11 +835,33 @@ export async function onRequest({ request, env, params, waitUntil }) {
     const token = request.headers.get('x-token') || url.searchParams.get('t');
     const me = token ? await db.prepare('SELECT * FROM members WHERE token=? AND active=1').bind(token).first() : null;
     if (!me) return fail('לא מחובר', 401);
+    const admin = me.role === 'admin' && request.headers.get('x-admin') === '1';
+    const A = me.apartment_id;
 
     for (const [m, pattern, handler] of routes) {
       if (m !== method) continue;
       const p = match(pattern, seg);
-      if (p) return await handler({ db, me, A: me.apartment_id, body, params: p, url, origin, waitUntil: wu });
+      if (!p) continue;
+      const key = method + ' ' + pattern;
+      const logIt = method !== 'GET' && !pattern.startsWith('push/');
+      let subj = null, extra = null;
+      if (logIt) {
+        try {
+          const sb = SUBJECT[seg[0]];
+          if (sb && p.id) { const r = await db.prepare(`SELECT ${sb[1]} v FROM ${sb[0]} WHERE id=? AND apartment_id=?`).bind(p.id, A).first(); subj = r && r.v; }
+          if (key === 'POST duty/done') { const r = await db.prepare('SELECT m.id, m.name FROM duty d JOIN members m ON m.id=d.member_id WHERE d.apartment_id=?').bind(A).first(); if (r && r.id !== me.id) extra = r.name; }
+          if (key === 'PATCH duty' || key === 'POST swaps') { const r = await db.prepare('SELECT name FROM members WHERE id=? AND apartment_id=?').bind(body.member_id || body.to_member, A).first(); extra = r && r.name; }
+          if (key === 'PATCH issues/:id' && body.assignee) { const r = await db.prepare('SELECT name FROM members WHERE id=?').bind(body.assignee).first(); extra = r && r.name; }
+          if (key === 'POST polls/:id/vote') { const r = await db.prepare('SELECT text FROM poll_options WHERE id=?').bind(body.option_id).first(); extra = r && r.text; }
+        } catch {}
+      }
+      const res = await handler({ db, me, A, body, params: p, url, origin, waitUntil: wu, admin });
+      if (logIt && res.status < 400) {
+        const summary = describe(key, body, subj, extra);
+        if (summary) wu(db.prepare('INSERT INTO activity (id, apartment_id, member_id, action, summary, admin, created_at) VALUES (?,?,?,?,?,?,?)')
+          .bind(uid(), A, me.id, key, summary, admin ? 1 : 0, now()).run().catch(() => {}));
+      }
+      return res;
     }
     return fail('לא נמצא', 404);
   } catch (e) {

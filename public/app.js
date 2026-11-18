@@ -183,11 +183,55 @@
     render();
   }
 
+  // ---------- admin ----------
+  const isAdminUser = () => !!(S.data && S.data.me && S.data.me.role === 'admin');
+  const isAdmin = () => isAdminUser() && localStorage.getItem('dira.admin') === '1';
+  const ACT_ICON = (a) => (/shopping|store/.test(a) ? '🛒' : /inventory/.test(a) ? '📦' : /notices/.test(a) ? '📌' : /issues/.test(a) ? '🔧'
+    : /info/.test(a) ? 'ℹ️' : /polls/.test(a) ? '🗳️' : /duty|swaps|chores/.test(a) ? '🧹' : /members|me|apartment/.test(a) ? '👤' : '•');
+  async function loadActivity(more) {
+    try {
+      const qs = new URLSearchParams();
+      if (S.actMember) qs.set('member', S.actMember);
+      if (more && S.activity && S.activity.length) qs.set('before', S.activity[S.activity.length - 1].created_at);
+      const j = await api('GET', 'activity?' + qs.toString());
+      S.activity = more ? (S.activity || []).concat(j.items) : j.items;
+      S.actDone = j.items.length < 150;
+    } catch (e) { toast(e.message); }
+    render();
+  }
+  function viewAdmin() {
+    const on = isAdmin();
+    const list = S.activity;
+    let lastDay = '';
+    const rows = (list || []).map((a) => {
+      const dt = new Date(a.created_at);
+      const day = dt.toLocaleDateString('he-IL', { weekday: 'long', day: 'numeric', month: 'numeric' });
+      const head = day !== lastDay ? `<div class="small muted" style="margin:12px 0 4px;font-weight:600">${esc(day)}</div>` : '';
+      lastDay = day;
+      return `${head}<div class="row" style="padding:7px 0;border-bottom:1px solid var(--line);align-items:flex-start">
+        ${av(a.member_id, 'sm')}<div class="grow"><div><b>${esc(M(a.member_id).name)}</b> ${esc(a.summary)}${a.admin ? ' <span class="tag danger" style="font-size:10.5px">אדמין</span>' : ''}</div>
+        <div class="small muted">${dt.toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' })}</div></div><span>${ACT_ICON(a.action)}</span></div>`;
+    }).join('');
+    return `<div class="card" style="${on ? 'outline:2px solid var(--danger);outline-offset:-2px' : ''}">
+        <div class="row"><span style="font-size:26px">🛡️</span><div class="grow"><b>מצב אדמין ${on ? 'פעיל' : 'כבוי'}</b>
+        <div class="small muted">${on ? 'יש לך הרשאות מלאות: לסמן תורנות במקום אחרים, לערוך ולמחוק כל סקר, ולבקש החלפה בשם התורן/ית. פעולות שנעשות כך מסומנות ביומן.' : 'במצב רגיל יש לך אותן הרשאות כמו לכל שותף.'}</div></div></div>
+        <button class="btn block ${on ? 'danger' : 'primary'}" style="margin-top:10px" data-a="admin-toggle">${on ? 'חזרה למשתמש רגיל' : 'כניסה כאדמין'}</button>
+      </div>
+      <div class="section-title">יומן פעולות <button class="link" data-a="act-reload">↻ רענון</button></div>
+      <div class="chips" style="margin:0 2px 10px">
+        <button class="chip ${!S.actMember ? 'on' : ''}" data-a="act-filter" data-v="">כולם</button>
+        ${D().members.map((m) => `<button class="chip ${S.actMember === m.id ? 'on' : ''}" data-a="act-filter" data-v="${m.id}">${esc(m.name)}</button>`).join('')}
+      </div>
+      <div class="card">${list == null ? '<div class="empty">טוען…</div>' : list.length ? rows : '<div class="empty">עוד אין פעולות ביומן</div>'}
+      ${list && list.length && !S.actDone ? '<button class="btn block" style="margin-top:10px" data-a="act-more">הצגת פעולות קודמות</button>' : ''}</div>
+      <p class="small muted" style="margin:0 4px">היומן נאסף מרגע ההפעלה של האזור הזה ואילך.</p>`;
+  }
+
   // ---------- api ----------
   async function api(method, path, body) {
     const r = await fetch('/api/' + path, {
       method,
-      headers: { 'content-type': 'application/json', ...(S.token ? { 'x-token': S.token } : {}) },
+      headers: { 'content-type': 'application/json', ...(S.token ? { 'x-token': S.token } : {}), ...(isAdmin() ? { 'x-admin': '1' } : {}) },
       body: body ? JSON.stringify(body) : undefined,
     });
     const j = await r.json().catch(() => ({}));
@@ -408,7 +452,7 @@
       S.parts = {};
     }
     const parts = {
-      header: `<div><h1>${esc(titles[S.tab])}</h1>${S.tab === 'home' ? `<div class="sub">${esc(greeting())}, ${esc(me().name)}</div>` : ''}</div>
+      header: `<div><h1>${esc(titles[S.tab])}${isAdmin() ? ' <span class="tag danger" style="vertical-align:middle;font-size:11px">🛡️ אדמין</span>' : ''}</h1>${S.tab === 'home' ? `<div class="sub">${esc(greeting())}, ${esc(me().name)}</div>` : ''}</div>
         <div class="row" style="gap:2px"><button class="icon-btn refresh" data-a="hard-refresh" aria-label="ריענון">↻</button><button class="icon-btn" data-a="member-open" data-id="${me().id}" aria-label="הפרופיל שלי">${av(me().id)}</button></div>`,
       main: body,
       nav: tabs.map(([k, ic, l, b]) => `<button class="${S.tab === k ? 'on' : ''}" data-a="tab" data-tab="${k}"><span class="ic">${ic}</span>${l}${b ? `<span class="badge">${b}</span>` : ''}</button>`).join(''),
@@ -541,14 +585,14 @@
         <span class="grow">${esc(M(l.member_id).name)} סיים/ה את התורנות ${rel(l.done_at)}${l.done_by !== l.member_id ? ` (סומן ע״י ${esc(M(l.done_by).name)})` : ''}</span>
         ${l.image_id ? `<button class="icon-btn" data-a="view-img" data-id="${l.image_id}">🖼</button>` : ''}
         ${d.can_undo ? '<button class="btn ghost sm" data-a="duty-undo">ביטול</button>' : ''}</div>` : '';
-    const showDone = mine;
+    const showDone = mine || isAdmin();
     return `<div class="${cls}">
       ${last}
       <div class="small muted">${d.status === 'upcoming' ? 'התורן/ית הבא/ה' : 'התורן/ית עכשיו'}</div>
       <div class="row" style="margin:8px 0">${av(d.member_id, 'lg')}<div class="grow"><div style="font-size:20px;font-weight:700">${esc(nm(d.member_id))}</div><div class="small muted">${dutyRange(d)}</div></div></div>
       <div class="row wrap" style="gap:6px">${status}${pending ? `<span class="tag warn">⇄ ממתין לאישור של ${esc(M(pending.to_member).name)}</span>` : ''}</div>
       ${showDone ? `<div class="row" style="margin-top:12px;gap:6px">
-        <button class="btn primary grow" data-a="duty-done">✓ סיימתי את התורנות</button>
+        <button class="btn primary grow" data-a="duty-done">✓ ${mine ? 'סיימתי את התורנות' : 'סימון בוצע (אדמין)'}</button>
         <button class="btn" data-a="duty-done-photo" aria-label="בוצע עם תמונה">📷</button>
         ${mine && !pending && D().members.length > 1 ? '<button class="btn" data-a="swap-ask" aria-label="החלפה">⇄</button>' : ''}
         ${pending && pending.from_member === me().id ? `<button class="btn" data-a="swap-reject" data-id="${pending.id}">ביטול בקשה</button>` : ''}
@@ -856,18 +900,19 @@
   function viewMore() {
     const sub = S.sub.more;
     const seg = `<div class="seg">
-      ${[['polls', 'סקרים'], ['info', 'פרטי הדירה'], ['members', 'שותפים'], ['settings', 'הגדרות']].map(([k, l]) => `<button class="${sub === k ? 'on' : ''}" data-a="sub" data-k="more" data-v="${k}">${l}</button>`).join('')}
+      ${[['polls', 'סקרים'], ['info', 'פרטי הדירה'], ['members', 'שותפים'], ['settings', 'הגדרות'], ...(isAdminUser() ? [['admin', '🛡️ ניהול']] : [])].map(([k, l]) => `<button class="${sub === k ? 'on' : ''}" data-a="sub" data-k="more" data-v="${k}">${l}</button>`).join('')}
     </div>`;
     if (sub === 'polls') return seg + viewPolls();
     if (sub === 'info') return seg + viewInfo();
     if (sub === 'members') return seg + viewMembers();
+    if (sub === 'admin' && isAdminUser()) { if (S.activity == null && !S.actLoading) { S.actLoading = true; loadActivity().finally(() => { S.actLoading = false; }); } return seg + viewAdmin(); }
     return seg + viewSettings();
   }
   function pollCard(p) {
     const total = p.votes.length;
     const myVote = p.votes.find((v) => v.member_id === me().id);
     return `<div class="card">
-      <div class="row between"><b class="grow">${esc(p.question)}</b>${p.closed ? '<span class="tag">סגור</span>' : ''}${p.created_by === me().id ? `<button class="icon-btn" data-a="poll-menu" data-id="${p.id}" aria-label="אפשרויות">⋯</button>` : ''}</div>
+      <div class="row between"><b class="grow">${esc(p.question)}</b>${p.closed ? '<span class="tag">סגור</span>' : ''}${p.created_by === me().id || isAdmin() ? `<button class="icon-btn" data-a="poll-menu" data-id="${p.id}" aria-label="אפשרויות">⋯</button>` : ''}</div>
       <div class="small muted">${esc(M(p.created_by).name)} · ${rel(p.created_at)} · ${total}/${D().members.length} הצביעו</div>
       ${p.options.map((o) => {
         const vs = p.votes.filter((v) => v.option_id === o.id);
@@ -989,6 +1034,8 @@
 
     // chores
     'duty-done': async () => {
+      const dd = D().duty;
+      if (dd && dd.member_id !== me().id && !confirm(`לסמן כאדמין שהתורנות של ${M(dd.member_id).name} בוצעה?`)) return;
       await act('POST', 'duty/done', {}, 'כל הכבוד! ✨ התור עבר הלאה');
     },
     'duty-done-photo': async () => {
@@ -1201,6 +1248,15 @@
     },
     'mem-remove': async (ds) => { if (!confirm(`להסיר את ${M(ds.id).name} מהדירה?`)) return; await act('DELETE', 'members/' + ds.id, null, 'הוסר/ה'); },
     'set-color': (ds, el) => { sheetCtx.color = ds.v; el.parentElement.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b === el)); S.pickColor = ds.v; },
+    'admin-toggle': () => {
+      const on = !isAdmin();
+      localStorage.setItem('dira.admin', on ? '1' : '0');
+      toast(on ? 'נכנסת כאדמין 🛡️' : 'חזרת למשתמש רגיל');
+      render();
+    },
+    'act-reload': () => { S.activity = null; render(); },
+    'act-filter': (ds) => { S.actMember = ds.v || null; S.activity = null; render(); },
+    'act-more': () => loadActivity(true),
     'member-open': (ds) => {
       if (ds.id === me().id) { closeSheet(); S.tab = 'more'; S.sub.more = 'settings'; render(); return; }
       memberSheet(ds.id);
