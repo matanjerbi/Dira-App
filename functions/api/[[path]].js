@@ -213,6 +213,8 @@ async function notifyOthers(db, A, me, title, body, url, origin) {
 class HttpError extends Error {
   constructor(msg, status = 400) { super(msg); this.status = status; }
 }
+const ADMIN_ONLY = 'הפעולה הזו זמינה רק לאדמין';
+function requireAdmin(admin) { if (!admin) throw new HttpError(ADMIN_ONLY, 403); }
 
 // ---------- image helpers ----------
 async function saveImage(db, A, dataUrl) {
@@ -371,16 +373,19 @@ const routes = [
     await db.prepare('UPDATE members SET name=?, color=?, avatar=?, phone=? WHERE id=?').bind(name, color, avatar, phone, me.id).run();
     return json({ ok: true });
   }],
-  ['DELETE', 'members/:id', async ({ db, A, params }) => {
+  ['DELETE', 'members/:id', async ({ db, A, me, params, admin }) => {
+    if (params.id !== me.id) requireAdmin(admin); // leaving yourself is always allowed
     await db.prepare('UPDATE members SET active=0 WHERE id=? AND apartment_id=?').bind(params.id, A).run();
     return json({ ok: true });
   }],
-  ['POST', 'members/order', async ({ db, A, body }) => {
+  ['POST', 'members/order', async ({ db, A, body, admin }) => {
+    requireAdmin(admin);
     const ids = Array.isArray(body.ids) ? body.ids : [];
     await db.batch(ids.map((id, i) => db.prepare('UPDATE members SET position=? WHERE id=? AND apartment_id=?').bind(i, id, A)));
     return json({ ok: true });
   }],
-  ['PATCH', 'apartment', async ({ db, A, body }) => {
+  ['PATCH', 'apartment', async ({ db, A, body, admin }) => {
+    requireAdmin(admin);
     const name = str(body.name, 60);
     if (name) await db.prepare('UPDATE apartments SET name=? WHERE id=?').bind(name, A).run();
     return json({ ok: true });
@@ -441,7 +446,8 @@ const routes = [
     ]);
     return json({ ok: true });
   }],
-  ['PATCH', 'duty', async ({ db, A, body }) => {
+  ['PATCH', 'duty', async ({ db, A, body, admin }) => {
+    requireAdmin(admin);
     await ensureDuty(db, A);
     await own(db, 'members', body.member_id, A);
     await db.prepare('UPDATE duty SET member_id=? WHERE apartment_id=?').bind(body.member_id, A).run();
@@ -613,11 +619,15 @@ const routes = [
     waitUntil(notifyOthers(db, A, me, `📌 ${me.name} בלוח המודעות`, cut(text, 120), '/?tab=home', origin));
     return json({ ok: true });
   }],
-  ['PATCH', 'notices/:id', async ({ db, A, body, params }) => {
+  ['PATCH', 'notices/:id', async ({ db, A, me, body, params, admin }) => {
+    const nt = await own(db, 'notices', params.id, A);
+    if (nt.author !== me.id) requireAdmin(admin);
     await db.prepare('UPDATE notices SET pinned=? WHERE id=? AND apartment_id=?').bind(body.pinned ? 1 : 0, params.id, A).run();
     return json({ ok: true });
   }],
-  ['DELETE', 'notices/:id', async ({ db, A, params }) => {
+  ['DELETE', 'notices/:id', async ({ db, A, me, params, admin }) => {
+    const nt = await own(db, 'notices', params.id, A);
+    if (nt.author !== me.id) requireAdmin(admin);
     await db.prepare('DELETE FROM notices WHERE id=? AND apartment_id=?').bind(params.id, A).run();
     return json({ ok: true });
   }],
@@ -646,7 +656,9 @@ const routes = [
     }
     return json({ ok: true });
   }],
-  ['DELETE', 'issues/:id', async ({ db, A, params }) => {
+  ['DELETE', 'issues/:id', async ({ db, A, me, params, admin }) => {
+    const is = await own(db, 'issues', params.id, A);
+    if (is.created_by !== me.id) requireAdmin(admin);
     await db.prepare('DELETE FROM issues WHERE id=? AND apartment_id=?').bind(params.id, A).run();
     return json({ ok: true });
   }],

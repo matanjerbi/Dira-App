@@ -562,7 +562,7 @@
     return `<div class="notice">
       <div class="row">${av(n.author, 'sm')}<span class="small"><b>${esc(M(n.author).name)}</b> <span class="muted">· ${rel(n.created_at)}</span></span>
       <span class="grow"></span>${n.pinned ? '<span class="tag warn">📌 נעוץ</span>' : ''}
-      <button class="icon-btn" data-a="notice-menu" data-id="${n.id}" aria-label="אפשרויות">⋯</button></div>
+      ${n.author === me().id || isAdmin() ? `<button class="icon-btn" data-a="notice-menu" data-id="${n.id}" aria-label="אפשרויות">⋯</button>` : ''}</div>
       <p class="txt">${esc(n.text)}</p>
     </div>`;
   }
@@ -616,6 +616,7 @@
     const order = rotationOrder();
     const t = D().today;
     let s = d.status === 'upcoming' ? d.period_start + 7 : Math.max(t - ((t + 4) % 7) + 7, d.period_end + 1);
+    if (S.rotEdit && !isAdmin()) S.rotEdit = false;
     const edit = S.rotEdit;
     const rows = order.map((m, k) => {
       let when;
@@ -626,7 +627,7 @@
         <button class="icon-btn" data-a="rot-move" data-id="${m.id}" data-d="1" ${k === order.length - 1 ? 'disabled style="opacity:.25"' : ''} aria-label="למטה">▼</button>` : '';
       return `<div class="row" style="padding:7px 0"><span class="muted small" style="width:14px">${k + 1}</span>${av(m.id, 'sm')}<span class="grow">${esc(nm(m.id))}</span>${edit ? arrows : when}</div>`;
     });
-    return `<div class="section-title">סדר הסבב <button class="link" data-a="rot-edit">${edit ? 'סיום' : '✏️ עריכת הסדר'}</button></div>
+    return `<div class="section-title">סדר הסבב ${isAdmin() ? `<button class="link" data-a="rot-edit">${S.rotEdit ? 'סיום' : '✏️ עריכת הסדר'}</button>` : ''}</div>
       <div class="card">${rows.join('')}
       <p class="small muted" style="margin:6px 0 0">${edit ? 'מזיזים את הבאים בתור. התורן/ית הנוכחי/ת נשאר/ת ראשון/ה.' : 'התאריכים בהנחה שכולם מסיימים בזמן. התור עובר רק כשמסמנים "בוצע".'}</p></div>`;
   }
@@ -669,9 +670,9 @@
       <div class="card">${d.tasks.map((t) => `<div class="row" style="padding:6px 0"><span style="font-size:22px">${esc(t.icon || '✨')}</span><span class="grow">${esc(t.name)}</span>
         <button class="btn sm" data-a="task-edit" data-id="${t.id}">עריכה</button></div>`).join('') || '<div class="empty">אין משימות</div>'}
         <button class="btn primary block" style="margin-top:8px" data-a="task-new">+ משימה</button></div>
-      <div class="section-title">התורן/ית הנוכחי/ת</div>
+      ${isAdmin() ? `<div class="section-title">התורן/ית הנוכחי/ת <span class="tag danger" style="font-size:11px">אדמין</span></div>
       <div class="card"><select class="input" data-a-change="duty-set">${d.members.map((m) => `<option value="${m.id}" ${d.duty && d.duty.member_id === m.id ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}</select>
-      <p class="small muted" style="margin:8px 0 0">שינוי ידני, למשל כשמישהו לא בבית. התאריכים לא משתנים.</p></div>`;
+      <p class="small muted" style="margin:8px 0 0">שינוי ידני, למשל כשמישהו לא בבית. התאריכים לא משתנים.</p></div>` : ''}`;
   }
   const CHORE_ICONS = ['🚽', '🚿', '🛁', '🍳', '🍽️', '🧹', '🧽', '🪣', '🗑️', '♻️', '🪟', '🛋️', '🧺', '🌿', '🐾', '🧊', '✨'];
   function taskSheet(t) {
@@ -883,7 +884,7 @@
       </select></div>
       <button class="chip ${i.landlord ? 'on' : ''}" style="margin-bottom:14px" data-a="issue-set" data-id="${i.id}" data-f="landlord" data-v="${i.landlord ? 0 : 1}">🏢 באחריות בעל הבית</button>
       ${i.landlord ? landlordMsgBtn(i) : ''}
-      <button class="btn danger block" style="margin-top:8px" data-a="issue-del" data-id="${i.id}">מחיקה</button>
+      ${i.created_by === me().id || isAdmin() ? `<button class="btn danger block" style="margin-top:8px" data-a="issue-del" data-id="${i.id}">מחיקה</button>` : ''}
     `);
   }
   function landlordMsgBtn(i) {
@@ -951,9 +952,9 @@
       <div class="card">${d.members.map((m) => `<div class="row" style="padding:8px 0">
         ${av(m.id)}<div class="grow" data-a="member-open" data-id="${m.id}" style="cursor:pointer"><b>${esc(m.name)}</b>${m.id === me().id ? ' <span class="small muted">(אני)</span>' : ''}</div>
         ${m.id !== me().id ? waBtn(m) : ''}
-        ${m.id !== me().id ? `<button class="icon-btn" data-a="mem-remove" data-id="${m.id}" aria-label="הסרה">✕</button>` : ''}
+        ${m.id !== me().id && isAdmin() ? `<button class="icon-btn" data-a="mem-remove" data-id="${m.id}" aria-label="הסרה">✕</button>` : ''}
       </div>`).join('')}</div>
-      <p class="small muted" style="margin:0 4px">את סדר הסבב משנים בלשונית "ניקיונות".</p>`;
+      <p class="small muted" style="margin:0 4px">את סדר הסבב משנים בלשונית "ניקיונות" (אדמין).</p>`;
   }
   const COLORS = ['#e76f51', '#2a9d8f', '#8e7dbe', '#e9a23b', '#457b9d', '#d1495b', '#66a182', '#c77dff'];
   function viewSettings() {
@@ -970,7 +971,7 @@
         <div class="field"><label>השם שלי</label><input class="input" id="set-name" value="${esc(me().name)}" maxlength="30"></div>
         <div class="field"><label>📱 מספר טלפון לוואטסאפ</label><input class="input" id="set-phone" type="tel" inputmode="tel" dir="ltr" style="text-align:right" placeholder="050-1234567" value="${esc(me().phone || '')}" maxlength="20"></div>
         <div class="field"><label>הצבע שלי</label><div class="color-pick">${COLORS.map((c) => `<button class="${me().color === c ? 'on' : ''}" style="background:${c}" data-a="set-color" data-v="${c}"></button>`).join('')}</div></div>
-        <div class="field"><label>שם הדירה</label><input class="input" id="set-apt" value="${esc(d.apartment.name)}" maxlength="60"></div>
+        ${isAdmin() ? `<div class="field"><label>שם הדירה</label><input class="input" id="set-apt" value="${esc(d.apartment.name)}" maxlength="60"></div>` : ''}
         <button class="btn primary block" data-a="set-save">שמירה</button>
       </div>
       <div class="card">
