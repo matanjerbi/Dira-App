@@ -430,10 +430,11 @@ const routes = [
         '/?tab=chores', origin))).catch(() => {}));
     return json({ ok: true });
   }],
-  ['POST', 'duty/undo', async ({ db, A }) => {
+  ['POST', 'duty/undo', async ({ db, A, me, admin }) => {
     const d = await db.prepare('SELECT * FROM duty WHERE apartment_id=?').bind(A).first();
     const last = await db.prepare('SELECT * FROM duty_log WHERE apartment_id=? ORDER BY done_at DESC LIMIT 1').bind(A).first();
     if (!d || !last || last.done_at !== d.started_at) throw new HttpError('אי אפשר לבטל');
+    if (last.done_by !== me.id && !admin) throw new HttpError('רק מי שסימן/ה "בוצע" יכול/ה לבטל', 403);
     await db.batch([
       db.prepare('UPDATE duty SET member_id=?, period_start=?, period_end=?, started_at=? WHERE apartment_id=?').bind(last.member_id, last.period_start, last.period_end, now(), A),
       db.prepare('DELETE FROM duty_log WHERE id=?').bind(last.id),

@@ -584,7 +584,7 @@
     const last = l ? `<div class="row small" style="background:var(--ok-soft);border-radius:12px;padding:8px 10px;margin-bottom:12px">✅
         <span class="grow">${esc(M(l.member_id).name)} סיים/ה את התורנות ${rel(l.done_at)}${l.done_by !== l.member_id ? ` (סומן ע״י ${esc(M(l.done_by).name)})` : ''}</span>
         ${l.image_id ? `<button class="icon-btn" data-a="view-img" data-id="${l.image_id}">🖼</button>` : ''}
-        ${d.can_undo ? '<button class="btn ghost sm" data-a="duty-undo">ביטול</button>' : ''}</div>` : '';
+        ${d.can_undo && (l.done_by === me().id || isAdmin()) ? '<button class="btn ghost sm" data-a="duty-undo">ביטול</button>' : ''}</div>` : '';
     const showDone = mine || isAdmin();
     return `<div class="${cls}">
       ${last}
